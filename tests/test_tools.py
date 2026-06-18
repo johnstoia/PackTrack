@@ -163,3 +163,28 @@ def test_remove_tracking_success_then_gone(wired_store):
 def test_remove_tracking_unknown(wired_store):
     out = json.loads(tools.shipment_remove_tracking({"tracking_number": "NOPE"}))
     assert "error" in out
+
+
+class _RecordingCtx:
+    def __init__(self):
+        self.registered = {}
+
+    def register_tool(self, name, toolset, schema, handler):
+        self.registered[name] = {"toolset": toolset, "schema": schema, "handler": handler}
+
+
+def test_register_wires_all_four_tools():
+    import importlib
+
+    pkg = importlib.import_module("__init__")  # the plugin's __init__.py at repo root
+    ctx = _RecordingCtx()
+    pkg.register(ctx)
+    assert set(ctx.registered.keys()) == {
+        "shipment_add_tracking",
+        "shipment_get_status",
+        "shipment_list_tracked",
+        "shipment_remove_tracking",
+    }
+    # Each wired handler is callable.
+    for entry in ctx.registered.values():
+        assert callable(entry["handler"])

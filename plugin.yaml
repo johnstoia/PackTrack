@@ -1,0 +1,9 @@
+name: shipment-tracker
+version: 0.1.0
+description: Track package shipments and their delivery status (PackTrak MVP, mock provider).
+author: jstoia16@gmail.com
+provides_tools:
+  - shipment_add_tracking
+  - shipment_get_status
+  - shipment_list_tracked
+  - shipment_remove_tracking
