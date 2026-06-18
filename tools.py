@@ -9,8 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from providers import get_provider
-from store import ShipmentStore
+from .providers import get_provider
+from .store import ShipmentStore
 
 # Default runtime store: data/shipments.json next to this module.
 _DEFAULT_STORE_PATH = Path(__file__).parent / "data" / "shipments.json"

@@ -1,7 +1,21 @@
-import os
-import sys
+"""Test bootstrap: load this plugin as a package named ``packtrack``.
 
-# Make the plugin modules (tools, store, schemas, providers) importable from the
-# repo root during tests. Hermes adds the plugin directory to the path at runtime;
-# this mirrors that for `pytest` run from the repo root.
-sys.path.insert(0, os.path.dirname(__file__))
+Hermes loads ``~/.hermes/plugins/<name>/`` as a Python package, so the plugin's
+modules import their siblings with relative imports (``from . import ...``). To
+exercise that exact import path, we register this repo directory as the
+``packtrack`` package before any test imports it. The fixed name ``packtrack`` is
+independent of the local checkout's folder name.
+"""
+import importlib.util
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent
+_spec = importlib.util.spec_from_file_location(
+    "packtrack",
+    _ROOT / "__init__.py",
+    submodule_search_locations=[str(_ROOT)],
+)
+_pkg = importlib.util.module_from_spec(_spec)
+sys.modules["packtrack"] = _pkg
+_spec.loader.exec_module(_pkg)

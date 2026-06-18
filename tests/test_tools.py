@@ -2,10 +2,10 @@ import json
 
 import pytest
 
-import schemas as schemas_module
-import tools
-from providers import CANONICAL_STATUSES, StatusResult, TrackingProvider, get_provider
-from store import ShipmentStore
+from packtrack import schemas as schemas_module
+from packtrack import tools
+from packtrack.providers import CANONICAL_STATUSES, StatusResult, TrackingProvider, get_provider
+from packtrack.store import ShipmentStore
 
 
 def test_canonical_statuses_are_the_ten_expected():
@@ -174,11 +174,10 @@ class _RecordingCtx:
 
 
 def test_register_wires_all_four_tools():
-    import importlib
+    import packtrack
 
-    pkg = importlib.import_module("__init__")  # the plugin's __init__.py at repo root
     ctx = _RecordingCtx()
-    pkg.register(ctx)
+    packtrack.register(ctx)
     assert set(ctx.registered.keys()) == {
         "shipment_add_tracking",
         "shipment_get_status",

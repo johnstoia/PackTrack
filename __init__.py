@@ -2,8 +2,7 @@
 
 Hermes calls `register(ctx)` once at startup to wire each tool schema to its handler.
 """
-import schemas
-import tools
+from . import schemas, tools
 
 
 def register(ctx):
