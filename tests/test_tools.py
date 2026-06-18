@@ -5,6 +5,13 @@ import pytest
 from packtrack import schemas as schemas_module
 from packtrack import tools
 from packtrack.providers import CANONICAL_STATUSES, StatusResult, TrackingProvider, get_provider
+from packtrack.providers import (
+    ProviderError,
+    CredentialsMissingError,
+    TrackingNotFoundError,
+    CarrierAPIError,
+)
+from packtrack.providers.mock import MockProvider
 from packtrack.store import ShipmentStore
 
 
@@ -187,3 +194,28 @@ def test_register_wires_all_four_tools():
     # Each wired handler is callable.
     for entry in ctx.registered.values():
         assert callable(entry["handler"])
+
+
+def test_provider_error_hierarchy():
+    assert issubclass(CredentialsMissingError, ProviderError)
+    assert issubclass(TrackingNotFoundError, ProviderError)
+    assert issubclass(CarrierAPIError, ProviderError)
+
+
+def test_carrier_api_error_carries_status_code():
+    err = CarrierAPIError("boom", status_code=503)
+    assert err.status_code == 503
+    assert str(err) == "boom"
+
+
+def test_router_routes_usps_to_usps_provider():
+    from packtrack.providers.usps import USPSProvider
+    assert isinstance(get_provider("usps"), USPSProvider)
+    assert isinstance(get_provider("USPS"), USPSProvider)  # case-insensitive
+
+
+def test_router_falls_back_to_mock():
+    assert isinstance(get_provider("mock"), MockProvider)
+    assert isinstance(get_provider(None), MockProvider)
+    assert isinstance(get_provider(""), MockProvider)
+    assert isinstance(get_provider("ups"), MockProvider)  # not implemented yet -> mock
