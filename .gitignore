@@ -9,3 +9,6 @@ env/
 Thumbs.db
 .idea/
 .vscode/
+
+# Superpowers workflow artifacts (spec/plan docs) — not part of the shipped plugin
+docs/superpowers/

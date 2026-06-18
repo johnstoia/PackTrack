@@ -37,9 +37,20 @@ Statuses are normalized to: `pending`, `info_received`, `in_transit`,
    HERMES_PLUGINS_DEBUG=1 hermes plugins list
    ```
 
-3. **Restart Hermes (or the Hermes gateway)** so the plugin is loaded.
+3. **Enable the `shipment` toolset.** The plugin registers its four tools under a
+   `shipment` toolset, and Hermes toolsets are opt-in, so enable it once:
 
-4. **Test manually** in a Hermes session — ask the agent to:
+   ```bash
+   hermes tools enable shipment
+   ```
+
+   (If this reports `Unknown toolset 'shipment'`, the plugin failed to load — see
+   [Troubleshooting](#troubleshooting) below.)
+
+4. **Restart Hermes (or the Hermes gateway)** so the plugin and toolset are loaded
+   into a fresh session.
+
+5. **Test manually** in a Hermes session — ask the agent to:
    - add tracking for `1Z999AA10123456784` with carrier `ups` and label `Test box`
    - list tracked shipments
    - get the status of `1Z999AA10123456784`
@@ -61,6 +72,27 @@ Run the tests (pytest, standard library only):
 ```bash
 pytest -v
 ```
+
+**Intra-plugin imports must be relative.** Hermes loads `~/.hermes/plugins/<name>/`
+as a Python **package**, so modules import their siblings with relative imports
+(`from . import schemas, tools`, `from .providers import get_provider`). Absolute
+imports like `import schemas` will raise `ModuleNotFoundError` at load time, Hermes
+will silently disable the plugin's tools, and the toolset will never appear. The
+test harness (`conftest.py`) loads this directory as the `packtrack` package so the
+tests exercise that exact import path.
+
+## Troubleshooting
+
+**Tools don't appear / `hermes tools enable shipment` says `Unknown toolset`.**
+This means `register()` didn't run — almost always a plugin load error. Check the log:
+
+```bash
+grep -i packtrack ~/.hermes/logs/agent.log | tail -5
+```
+
+A line like `Failed to load plugin 'packtrack': No module named 'schemas'` confirms an
+import problem (see "intra-plugin imports must be relative" above). After fixing and
+pulling, restart Hermes and re-run `hermes tools enable shipment`.
 
 ## Swapping the provider
 
