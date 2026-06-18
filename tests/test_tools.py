@@ -3,6 +3,7 @@ import json
 import pytest
 
 import schemas as schemas_module
+import tools
 from providers import CANONICAL_STATUSES, StatusResult, TrackingProvider, get_provider
 from store import ShipmentStore
 
@@ -94,3 +95,71 @@ def test_each_schema_is_well_formed():
 
 def test_add_tracking_requires_only_tracking_number():
     assert schemas_module.ADD_TRACKING["parameters"]["required"] == ["tracking_number"]
+
+
+@pytest.fixture
+def wired_store(tmp_path, monkeypatch):
+    """Point the handlers' store at a temp file via the injectable hook."""
+    test_store = ShipmentStore(tmp_path / "shipments.json")
+    monkeypatch.setattr(tools, "_get_store", lambda: test_store)
+    return test_store
+
+
+def test_add_tracking_success(wired_store):
+    out = json.loads(tools.shipment_add_tracking({"tracking_number": "ABC123",
+                                                   "carrier": "ups", "label": "gift"}))
+    assert out["success"] is True
+    assert out["shipment"]["tracking_number"] == "ABC123"
+    assert out["shipment"]["carrier"] == "ups"
+
+
+def test_add_tracking_rejects_empty(wired_store):
+    for bad in ("", "   ", None):
+        out = json.loads(tools.shipment_add_tracking({"tracking_number": bad}))
+        assert "error" in out
+    assert wired_store.list() == []
+
+
+def test_add_tracking_rejects_duplicate(wired_store):
+    tools.shipment_add_tracking({"tracking_number": "DUP"})
+    out = json.loads(tools.shipment_add_tracking({"tracking_number": "DUP"}))
+    assert "error" in out
+    assert len(wired_store.list()) == 1
+
+
+def test_list_tracked_counts_and_contents(wired_store):
+    assert json.loads(tools.shipment_list_tracked({}))["count"] == 0
+    tools.shipment_add_tracking({"tracking_number": "A"})
+    tools.shipment_add_tracking({"tracking_number": "B"})
+    out = json.loads(tools.shipment_list_tracked({}))
+    assert out["count"] == 2
+    numbers = {s["tracking_number"] for s in out["shipments"]}
+    assert numbers == {"A", "B"}
+
+
+def test_get_status_success_and_deterministic(wired_store):
+    tools.shipment_add_tracking({"tracking_number": "STATUS1", "carrier": "ups"})
+    out1 = json.loads(tools.shipment_get_status({"tracking_number": "STATUS1"}))
+    out2 = json.loads(tools.shipment_get_status({"tracking_number": "STATUS1"}))
+    assert out1["success"] is True
+    assert out1["status"] in CANONICAL_STATUSES
+    assert out1["provider"] == "mock"
+    assert out1["status"] == out2["status"]
+
+
+def test_get_status_unknown(wired_store):
+    out = json.loads(tools.shipment_get_status({"tracking_number": "NOPE"}))
+    assert "error" in out
+
+
+def test_remove_tracking_success_then_gone(wired_store):
+    tools.shipment_add_tracking({"tracking_number": "DELETEME"})
+    out = json.loads(tools.shipment_remove_tracking({"tracking_number": "DELETEME"}))
+    assert out["success"] is True
+    assert out["removed"] == "DELETEME"
+    assert json.loads(tools.shipment_list_tracked({}))["count"] == 0
+
+
+def test_remove_tracking_unknown(wired_store):
+    out = json.loads(tools.shipment_remove_tracking({"tracking_number": "NOPE"}))
+    assert "error" in out
