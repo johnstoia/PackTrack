@@ -287,3 +287,97 @@ def test_post_form_success(monkeypatch):
                                     {"grant_type": "client_credentials", "client_id": "k"})
     assert out["access_token"] == "T"
     assert b"grant_type=client_credentials" in captured["body"]
+
+
+from packtrack.providers.oauth_carrier import OAuthCarrierProvider, _TOKEN_CACHE
+
+
+class _FakeCarrier(OAuthCarrierProvider):
+    name = "fake"
+    token_path = "/oauth/token"
+    oauth_scope = "scope1"
+
+    def _base_url(self):
+        return "https://fake.test"
+
+    def _credentials(self):
+        return ("id", "secret")
+
+    def _tracking_url(self, tracking_number):
+        return f"https://fake.test/track/{tracking_number}"
+
+    def _extract_raw_status(self, payload):
+        return payload.get("s", "")
+
+    def normalize_status(self, raw):
+        return raw if raw in CANONICAL_STATUSES else "unknown"
+
+
+@pytest.fixture(autouse=True)
+def _clear_token_cache():
+    _TOKEN_CACHE.clear()
+    yield
+    _TOKEN_CACHE.clear()
+
+
+def test_oauth_fetch_status_happy_path(monkeypatch):
+    calls = {"token": 0, "track": 0}
+    def fake_post(url, data, headers=None, timeout=10):
+        calls["token"] += 1
+        assert data["grant_type"] == "client_credentials"
+        assert data["scope"] == "scope1"
+        return {"access_token": "TOK", "expires_in": 3600}
+    def fake_get(url, headers=None, timeout=10):
+        calls["track"] += 1
+        assert headers["Authorization"] == "Bearer TOK"
+        return {"s": "delivered"}
+    monkeypatch.setattr(http_client_mod, "post_form", fake_post)
+    monkeypatch.setattr(http_client_mod, "get_json", fake_get)
+
+    result = _FakeCarrier().fetch_status("XYZ", "fake")
+    assert result.status == "delivered"
+    assert result.raw_status == "delivered"
+    assert result.provider == "fake"
+    assert calls == {"token": 1, "track": 1}
+
+
+def test_oauth_token_is_cached_across_calls(monkeypatch):
+    calls = {"token": 0}
+    def fake_post(url, data, headers=None, timeout=10):
+        calls["token"] += 1
+        return {"access_token": "TOK", "expires_in": 3600}
+    monkeypatch.setattr(http_client_mod, "post_form", fake_post)
+    monkeypatch.setattr(http_client_mod, "get_json",
+                        lambda url, headers=None, timeout=10: {"s": "in_transit"})
+    c = _FakeCarrier()
+    c.fetch_status("A", "fake")
+    c.fetch_status("B", "fake")
+    assert calls["token"] == 1  # token reused, not re-fetched
+
+
+def test_oauth_refreshes_token_once_on_401(monkeypatch):
+    calls = {"token": 0, "track": 0}
+    def fake_post(url, data, headers=None, timeout=10):
+        calls["token"] += 1
+        return {"access_token": f"TOK{calls['token']}", "expires_in": 3600}
+    def fake_get(url, headers=None, timeout=10):
+        calls["track"] += 1
+        if calls["track"] == 1:
+            raise CarrierAPIError("unauthorized", status_code=401)
+        return {"s": "delivered"}
+    monkeypatch.setattr(http_client_mod, "post_form", fake_post)
+    monkeypatch.setattr(http_client_mod, "get_json", fake_get)
+    result = _FakeCarrier().fetch_status("A", "fake")
+    assert result.status == "delivered"
+    assert calls["token"] == 2  # refreshed once
+    assert calls["track"] == 2  # retried once
+
+
+def test_oauth_non_401_error_propagates(monkeypatch):
+    monkeypatch.setattr(http_client_mod, "post_form",
+                        lambda url, data, headers=None, timeout=10: {"access_token": "T", "expires_in": 3600})
+    def fake_get(url, headers=None, timeout=10):
+        raise CarrierAPIError("server error", status_code=500)
+    monkeypatch.setattr(http_client_mod, "get_json", fake_get)
+    with pytest.raises(CarrierAPIError):
+        _FakeCarrier().fetch_status("A", "fake")
