@@ -219,3 +219,71 @@ def test_router_falls_back_to_mock():
     assert isinstance(get_provider(None), MockProvider)
     assert isinstance(get_provider(""), MockProvider)
     assert isinstance(get_provider("ups"), MockProvider)  # not implemented yet -> mock
+
+
+import io
+import urllib.error
+from packtrack.providers import http_client as http_client_mod
+
+
+def _fake_resp(payload_bytes):
+    class _R:
+        def read(self):
+            return payload_bytes
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+    return _R()
+
+
+def _http_error(code, body=b""):
+    return urllib.error.HTTPError(
+        url="http://x", code=code, msg="err", hdrs=None, fp=io.BytesIO(body)
+    )
+
+
+def test_get_json_success(monkeypatch):
+    monkeypatch.setattr(http_client_mod.urllib.request, "urlopen",
+                        lambda req, timeout=10: _fake_resp(b'{"ok": true}'))
+    assert http_client_mod.get_json("http://x", {}) == {"ok": True}
+
+
+def test_get_json_404_raises_not_found(monkeypatch):
+    def boom(req, timeout=10):
+        raise _http_error(404)
+    monkeypatch.setattr(http_client_mod.urllib.request, "urlopen", boom)
+    with pytest.raises(TrackingNotFoundError):
+        http_client_mod.get_json("http://x", {})
+
+
+def test_get_json_500_raises_carrier_error_with_message(monkeypatch):
+    body = b'{"error": {"message": "kaboom"}}'
+    def boom(req, timeout=10):
+        raise _http_error(500, body)
+    monkeypatch.setattr(http_client_mod.urllib.request, "urlopen", boom)
+    with pytest.raises(CarrierAPIError) as ei:
+        http_client_mod.get_json("http://x", {})
+    assert ei.value.status_code == 500
+    assert "kaboom" in str(ei.value)
+
+
+def test_get_json_401_sets_status_code(monkeypatch):
+    def boom(req, timeout=10):
+        raise _http_error(401)
+    monkeypatch.setattr(http_client_mod.urllib.request, "urlopen", boom)
+    with pytest.raises(CarrierAPIError) as ei:
+        http_client_mod.get_json("http://x", {})
+    assert ei.value.status_code == 401
+
+
+def test_post_form_success(monkeypatch):
+    captured = {}
+    def fake_urlopen(req, timeout=10):
+        captured["body"] = req.data
+        return _fake_resp(b'{"access_token": "T", "expires_in": 3600}')
+    monkeypatch.setattr(http_client_mod.urllib.request, "urlopen", fake_urlopen)
+    out = http_client_mod.post_form("http://x/token",
+                                    {"grant_type": "client_credentials", "client_id": "k"})
+    assert out["access_token"] == "T"
+    assert b"grant_type=client_credentials" in captured["body"]
