@@ -1,4 +1,4 @@
-name: shipment-tracker
+name: PackTrak
 version: 0.1.0
 description: Track package shipments and their delivery status (PackTrak MVP, mock provider).
 author: jstoia16@gmail.com
