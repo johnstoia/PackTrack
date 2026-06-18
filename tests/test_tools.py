@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+import schemas as schemas_module
 from providers import CANONICAL_STATUSES, StatusResult, TrackingProvider, get_provider
 from store import ShipmentStore
 
@@ -75,3 +76,21 @@ def test_store_remove_returns_true_then_false(store):
     assert store.remove("DELETEME") is True
     assert store.remove("DELETEME") is False
     assert store.list() == []
+
+
+def test_each_schema_is_well_formed():
+    expected = {
+        "shipment_add_tracking": schemas_module.ADD_TRACKING,
+        "shipment_get_status": schemas_module.GET_STATUS,
+        "shipment_list_tracked": schemas_module.LIST_TRACKED,
+        "shipment_remove_tracking": schemas_module.REMOVE_TRACKING,
+    }
+    for name, schema in expected.items():
+        assert schema["name"] == name
+        assert isinstance(schema["description"], str) and schema["description"]
+        assert schema["parameters"]["type"] == "object"
+        assert "properties" in schema["parameters"]
+
+
+def test_add_tracking_requires_only_tracking_number():
+    assert schemas_module.ADD_TRACKING["parameters"]["required"] == ["tracking_number"]
