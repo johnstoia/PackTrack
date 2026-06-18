@@ -22,13 +22,13 @@ Statuses are normalized to: `pending`, `info_received`, `in_transit`,
 1. **Clone into the Hermes plugins directory:**
 
    ```bash
-   git clone <this-repo-url> ~/.hermes/plugins/PackTrak
+   git clone <this-repo-url> ~/.hermes/plugins/packtrack
    ```
 
 2. **Enable the plugin:**
 
    ```bash
-   hermes plugins enable PackTrak
+   hermes plugins enable packtrack
    ```
 
    Troubleshoot discovery with:
