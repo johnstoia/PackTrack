@@ -19,3 +19,11 @@ _spec = importlib.util.spec_from_file_location(
 _pkg = importlib.util.module_from_spec(_spec)
 sys.modules["packtrack"] = _pkg
 _spec.loader.exec_module(_pkg)
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "integration: live tests that hit real carrier APIs; require credentials, "
+        "skipped by default.",
+    )

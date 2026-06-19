@@ -488,3 +488,23 @@ def test_get_status_not_found_from_carrier(wired_store, monkeypatch, usps_creds)
     out = json.loads(tools.shipment_get_status({"tracking_number": "USPS3"}))
     assert "error" in out
     assert "not found" in out["error"]
+
+
+import os
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not (os.environ.get("USPS_CONSUMER_KEY")
+         and os.environ.get("USPS_CONSUMER_SECRET")
+         and os.environ.get("USPS_TEST_TRACKING_NUMBER")),
+    reason="USPS_CONSUMER_KEY, USPS_CONSUMER_SECRET, USPS_TEST_TRACKING_NUMBER not set",
+)
+def test_usps_live_tracking_returns_canonical_status():
+    """Hits the real USPS API. Run with: pytest -m integration"""
+    result = USPSProvider().fetch_status(
+        os.environ["USPS_TEST_TRACKING_NUMBER"], "usps"
+    )
+    assert result.provider == "usps"
+    assert result.status in CANONICAL_STATUSES
+    assert isinstance(result.raw_status, str)
