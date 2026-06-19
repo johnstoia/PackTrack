@@ -1,6 +1,6 @@
 name: packtrack
-version: 0.2.0
-description: Track package shipments and their delivery status (USPS live + mock fallback).
+version: 0.3.0
+description: Track package shipments and their delivery status (no-auth 17track + mock fallback).
 author: jstoia16@gmail.com
 provides_tools:
   - shipment_add_tracking

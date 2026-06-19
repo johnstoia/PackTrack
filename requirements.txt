@@ -1,0 +1,1 @@
+pyseventeentrack @ git+https://github.com/johnstoia/pyseventeentrack.git@v1.1.5

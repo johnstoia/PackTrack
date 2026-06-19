@@ -94,41 +94,43 @@ A line like `Failed to load plugin 'packtrack': No module named 'schemas'` confi
 import problem (see "intra-plugin imports must be relative" above). After fixing and
 pulling, restart Hermes and re-run `hermes tools enable shipment`.
 
-## Carriers & credentials
+## How tracking works
 
-`shipment_get_status` routes to a real carrier based on the `carrier` you set when
-adding a shipment. Supported today:
+`shipment_get_status` returns live tracking for any carrier with **no API key, no
+login, and no account.** It uses [`pyseventeentrack`](https://github.com/johnstoia/pyseventeentrack)
+(`client.track.find`), which reads 17track.net's public tracking endpoint; the carrier
+is auto-detected from the tracking number.
 
-| Carrier slug | Backend | Credentials (environment variables) |
-|---|---|---|
-| `usps` | USPS Tracking v3 (real) | `USPS_CONSUMER_KEY`, `USPS_CONSUMER_SECRET` |
-| anything else / unset | mock (deterministic) | none |
+**Dependency install is automatic.** On the first real tracking call, the plugin
+installs `pyseventeentrack` into the environment Hermes runs in (a venv-scoped
+`pip install` of the pinned spec), then proceeds. No setup step is required.
 
-Credentials are **yours** — the plugin never ships keys. Get a USPS consumer
-key/secret from [developer.usps.com](https://developer.usps.com) (OAuth2
-client-credentials, scope `tracking`), then set them in the environment Hermes runs in:
+To install it ahead of time (or if auto-install is disabled), do it manually into
+Hermes's venv:
 
 ```bash
-export USPS_CONSUMER_KEY='...'
-export USPS_CONSUMER_SECRET='...'
-# Optional: point at the USPS test environment instead of production
-export USPS_API_BASE='https://apis-tem.usps.com'
+~/.hermes/hermes-agent/venv/bin/pip install -r ~/.hermes/plugins/packtrack/requirements.txt
+# the pin: pyseventeentrack @ git+https://github.com/johnstoia/pyseventeentrack.git@v1.1.5
 ```
 
-The plugin loads even without credentials; USPS tracking simply returns a clear
-"credentials not configured" error until they're set. To track a package against
-USPS, add it with the carrier slug:
+Set `PACKTRACK_NO_AUTOINSTALL=1` to disable the auto-install; the plugin then returns
+a clear "install pyseventeentrack" error until the dependency is present. Add a
+shipment with `carrier: mock` to force the deterministic **mock** backend for
+offline/testing (the `provider` field in the output always shows `17track` vs `mock`).
 
-> "Track 9400111899223817428490, carrier usps"
+**This is a community/unofficial integration**, not an official 17track product: it
+relies on an undocumented public endpoint that can change. Tracking failures are
+treated as transient ("temporarily unavailable"), never as "package gone." Keep
+polling light — this plugin is intended to run per-user, not as a shared server.
 
 ### Live integration test
 
-The unit suite is hermetic (HTTP is mocked). One opt-in test hits the real USPS API and
-is skipped unless `USPS_CONSUMER_KEY`, `USPS_CONSUMER_SECRET`, and
-`USPS_TEST_TRACKING_NUMBER` are all set:
+The unit suite is hermetic (the library boundary is mocked). One opt-in test makes a
+real network call and is skipped unless `PACKTRACK_LIVE_TRACKING_NUMBER` is set (and
+the dependency is installed):
 
 ```bash
-USPS_CONSUMER_KEY=... USPS_CONSUMER_SECRET=... USPS_TEST_TRACKING_NUMBER=... pytest -m integration
+PACKTRACK_LIVE_TRACKING_NUMBER=9400111899223817428490 pytest -m integration
 ```
 
 ## Swapping the provider
