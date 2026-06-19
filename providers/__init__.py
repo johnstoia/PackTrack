@@ -51,10 +51,38 @@ class TrackingProvider(ABC):
         """Return the current StatusResult for a tracking number."""
 
 
-def get_provider(name: str = "mock") -> TrackingProvider:
-    """Return the active provider instance by name. Defaults to the mock provider."""
-    if name == "mock":
-        from .mock import MockProvider
+class ProviderError(Exception):
+    """Base class for provider failures. Handlers convert these to {"error": ...}."""
 
-        return MockProvider()
-    raise ValueError(f"unknown provider: {name}")
+
+class CredentialsMissingError(ProviderError):
+    """Required credentials (environment variables) are not configured."""
+
+
+class TrackingNotFoundError(ProviderError):
+    """The carrier reports the tracking number is unknown (HTTP 404)."""
+
+
+class CarrierAPIError(ProviderError):
+    """A carrier API call failed (transport, timeout, or HTTP error)."""
+
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def get_provider(carrier: Optional[str] = "mock") -> TrackingProvider:
+    """Resolve a carrier slug to a provider instance.
+
+    Known carriers route to their real provider; "mock", None, empty, or any
+    unrecognized carrier routes to the mock provider so the plugin stays useful.
+    """
+    slug = (carrier or "").strip().lower()
+    if slug == "usps":
+        from .usps import USPSProvider
+
+        return USPSProvider()
+    # "mock", "", None, or any not-yet-supported carrier -> mock fallback.
+    from .mock import MockProvider
+
+    return MockProvider()

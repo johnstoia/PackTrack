@@ -1,6 +1,6 @@
 name: packtrack
-version: 0.1.0
-description: Track package shipments and their delivery status (PackTrak MVP, mock provider).
+version: 0.2.0
+description: Track package shipments and their delivery status (USPS live + mock fallback).
 author: jstoia16@gmail.com
 provides_tools:
   - shipment_add_tracking

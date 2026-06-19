@@ -94,6 +94,43 @@ A line like `Failed to load plugin 'packtrack': No module named 'schemas'` confi
 import problem (see "intra-plugin imports must be relative" above). After fixing and
 pulling, restart Hermes and re-run `hermes tools enable shipment`.
 
+## Carriers & credentials
+
+`shipment_get_status` routes to a real carrier based on the `carrier` you set when
+adding a shipment. Supported today:
+
+| Carrier slug | Backend | Credentials (environment variables) |
+|---|---|---|
+| `usps` | USPS Tracking v3 (real) | `USPS_CONSUMER_KEY`, `USPS_CONSUMER_SECRET` |
+| anything else / unset | mock (deterministic) | none |
+
+Credentials are **yours** — the plugin never ships keys. Get a USPS consumer
+key/secret from [developer.usps.com](https://developer.usps.com) (OAuth2
+client-credentials, scope `tracking`), then set them in the environment Hermes runs in:
+
+```bash
+export USPS_CONSUMER_KEY='...'
+export USPS_CONSUMER_SECRET='...'
+# Optional: point at the USPS test environment instead of production
+export USPS_API_BASE='https://apis-tem.usps.com'
+```
+
+The plugin loads even without credentials; USPS tracking simply returns a clear
+"credentials not configured" error until they're set. To track a package against
+USPS, add it with the carrier slug:
+
+> "Track 9400111899223817428490, carrier usps"
+
+### Live integration test
+
+The unit suite is hermetic (HTTP is mocked). One opt-in test hits the real USPS API and
+is skipped unless `USPS_CONSUMER_KEY`, `USPS_CONSUMER_SECRET`, and
+`USPS_TEST_TRACKING_NUMBER` are all set:
+
+```bash
+USPS_CONSUMER_KEY=... USPS_CONSUMER_SECRET=... USPS_TEST_TRACKING_NUMBER=... pytest -m integration
+```
+
 ## Swapping the provider
 
 `providers/__init__.py` defines the `TrackingProvider` ABC and `get_provider()`

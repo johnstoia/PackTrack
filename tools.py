@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .providers import get_provider
+from .providers import get_provider, ProviderError
 from .store import ShipmentStore
 
 # Default runtime store: data/shipments.json next to this module.
@@ -72,7 +72,13 @@ def shipment_get_status(args: dict, **kwargs) -> str:
         if record is None:
             return json.dumps({"error": "tracking_number not tracked"})
 
-        result = get_provider().fetch_status(tracking_number, record["carrier"])
+        try:
+            result = get_provider(record["carrier"]).fetch_status(
+                tracking_number, record["carrier"]
+            )
+        except ProviderError as exc:
+            return json.dumps({"error": str(exc)})
+
         return json.dumps({
             "success": True,
             "tracking_number": tracking_number,
