@@ -11,7 +11,6 @@ mapped to a canonical value by case-insensitive keyword match.
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 from . import CredentialsMissingError
 from .oauth_carrier import OAuthCarrierProvider
