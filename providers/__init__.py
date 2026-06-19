@@ -1,8 +1,10 @@
 """Provider layer for PackTrak.
 
-This module defines the swappable seam for shipment-tracking backends. The MVP
-ships only `MockProvider`; real providers (AfterShip, EasyPost, 17TRACK) are added
-later by subclassing `TrackingProvider` and registering them in `get_provider`.
+This module defines the swappable seam for shipment-tracking backends.
+`SeventeenTrackProvider` (no-auth 17track) is the default backend; `MockProvider`
+is the deterministic offline/test backend selected via the `"mock"` carrier slug.
+New backends are added by subclassing `TrackingProvider` and wiring them into
+`get_provider`.
 """
 from __future__ import annotations
 
@@ -43,10 +45,11 @@ class TrackingProvider(ABC):
     name: str
 
     @abstractmethod
-    def normalize_status(self, raw: str) -> str:
+    def normalize_status(self, raw: str, sub_status: Optional[str] = None) -> str:
         """Map a provider-specific status string to one of CANONICAL_STATUSES.
 
-        Unrecognized input must map to "unknown".
+        ``sub_status`` is an optional finer-grained provider status some backends
+        supply. Unrecognized input must map to "unknown".
         """
 
     @abstractmethod

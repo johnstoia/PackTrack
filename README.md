@@ -1,8 +1,9 @@
 # PackTrak — Hermes Shipment Tracker
 
-A Hermes Agent plugin that tracks package shipments. MVP uses a deterministic mock
-provider; the provider layer is built to swap in AfterShip, EasyPost, or 17TRACK
-later without changing the tool handlers.
+A Hermes Agent plugin that tracks package shipments. It returns live tracking for any
+carrier with **no API key, login, or account** (via the no-auth 17track backend), and
+falls back to a deterministic mock backend for offline/testing. The provider layer is
+a swappable seam, so new backends drop in without changing the tool handlers.
 
 ## Tools
 

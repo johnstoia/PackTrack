@@ -14,7 +14,7 @@ from . import CANONICAL_STATUSES, StatusResult, TrackingProvider
 class MockProvider(TrackingProvider):
     name = "mock"
 
-    def normalize_status(self, raw: str) -> str:
+    def normalize_status(self, raw: str, sub_status: Optional[str] = None) -> str:
         candidate = (raw or "").strip().lower().replace("-", "_").replace(" ", "_")
         if candidate in CANONICAL_STATUSES:
             return candidate
