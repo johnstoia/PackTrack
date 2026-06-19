@@ -1,4 +1,6 @@
+import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -202,3 +204,130 @@ def test_provider_error_hierarchy():
 
 def test_get_provider_mock_slug_returns_mock():
     assert isinstance(get_provider("mock"), MockProvider)
+
+
+from packtrack.providers.seventeentrack import (
+    SeventeenTrackProvider,
+    _run_async,
+    _import_track_api,
+)
+import packtrack.providers.seventeentrack as st_mod
+
+
+def test_get_provider_defaults_to_seventeentrack():
+    assert isinstance(get_provider("usps"), SeventeenTrackProvider)
+    assert isinstance(get_provider(None), SeventeenTrackProvider)
+    assert isinstance(get_provider("mock"), MockProvider)
+
+
+def test_import_track_api_respects_optout(monkeypatch):
+    monkeypatch.setattr(st_mod, "_install_attempted", False)
+    monkeypatch.setattr(st_mod, "_do_import", lambda: (_ for _ in ()).throw(ImportError("nope")))
+    installs = []
+    monkeypatch.setattr(st_mod, "_pip_install", lambda spec: installs.append(spec))
+    monkeypatch.setenv("PACKTRACK_NO_AUTOINSTALL", "1")
+    with pytest.raises(ImportError):
+        _import_track_api()
+    assert installs == []
+
+
+def test_import_track_api_installs_once_then_reraises(monkeypatch):
+    monkeypatch.setattr(st_mod, "_install_attempted", False)
+    monkeypatch.setattr(st_mod, "_do_import", lambda: (_ for _ in ()).throw(ImportError("nope")))
+    installs = []
+    monkeypatch.setattr(st_mod, "_pip_install", lambda spec: installs.append(spec))
+    monkeypatch.delenv("PACKTRACK_NO_AUTOINSTALL", raising=False)
+    with pytest.raises(ImportError):
+        _import_track_api()
+    assert len(installs) == 1
+
+
+def _fake_pkg(status="InTransit", sub_status="InTransit_Other", carrier="USPS",
+              latest="Departed USPS Facility"):
+    return SimpleNamespace(
+        status=status, sub_status=sub_status, carrier=carrier,
+        events=[SimpleNamespace(description=latest)],
+    )
+
+
+def test_run_async_without_running_loop():
+    async def coro():
+        return 42
+    assert _run_async(coro) == 42
+
+
+def test_run_async_inside_running_loop():
+    async def outer():
+        async def inner():
+            return 7
+        return _run_async(inner)
+    assert asyncio.run(outer()) == 7
+
+
+@pytest.mark.parametrize("status,sub,expected", [
+    ("InfoReceived", None, "info_received"),
+    ("InTransit", "InTransit_PickedUp", "in_transit"),
+    ("OutForDelivery", None, "out_for_delivery"),
+    ("AvailableForPickup", None, "available_for_pickup"),
+    ("Delivered", "Delivered_Other", "delivered"),
+    ("DeliveryFailure", None, "delivery_attempted"),
+    ("Exception", None, "exception"),
+    ("Expired", None, "exception"),
+    ("NotFound", None, "unknown"),
+    ("InTransit", "Exception_Returning", "returned"),
+    ("SomethingNew", None, "unknown"),
+    (None, None, "unknown"),
+])
+def test_seventeentrack_normalize(status, sub, expected):
+    assert SeventeenTrackProvider().normalize_status(status, sub) == expected
+
+
+def test_seventeentrack_fetch_status_maps_package(monkeypatch):
+    prov = SeventeenTrackProvider()
+    monkeypatch.setattr(prov, "_find", lambda num: _fake_pkg(
+        status="Delivered", sub_status="Delivered_Other", carrier="USPS",
+        latest="Delivered, Front Porch"))
+    r = prov.fetch_status("X1")
+    assert r.status == "delivered"
+    assert r.raw_status == "Delivered"
+    assert r.provider == "17track"
+    assert r.carrier == "USPS"
+    assert r.sub_status == "Delivered_Other"
+    assert r.detail == "Delivered, Front Porch"
+
+
+def test_seventeentrack_propagates_not_found(monkeypatch):
+    prov = SeventeenTrackProvider()
+    def boom(num):
+        raise TrackingNotFoundError("no data")
+    monkeypatch.setattr(prov, "_find", boom)
+    with pytest.raises(TrackingNotFoundError):
+        prov.fetch_status("BOGUS")
+
+
+def test_get_status_uses_real_provider(wired_store, monkeypatch):
+    prov = SeventeenTrackProvider()
+    monkeypatch.setattr(prov, "_find", lambda num: _fake_pkg(
+        status="InTransit", sub_status="InTransit_PickedUp", carrier="USPS",
+        latest="Picked Up"))
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: prov)
+    tools.shipment_add_tracking({"tracking_number": "RP1", "carrier": "usps"})
+    out = json.loads(tools.shipment_get_status({"tracking_number": "RP1"}))
+    assert out["success"] is True
+    assert out["status"] == "in_transit"
+    assert out["provider"] == "17track"
+    assert out["carrier"] == "USPS"
+    assert out["sub_status"] == "InTransit_PickedUp"
+    assert out["detail"] == "Picked Up"
+
+
+def test_get_status_real_provider_error_returns_json(wired_store, monkeypatch):
+    prov = SeventeenTrackProvider()
+    def boom(num):
+        raise CarrierAPIError("tracking temporarily unavailable")
+    monkeypatch.setattr(prov, "_find", boom)
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: prov)
+    tools.shipment_add_tracking({"tracking_number": "RP2", "carrier": "usps"})
+    out = json.loads(tools.shipment_get_status({"tracking_number": "RP2"}))
+    assert "error" in out
+    assert "temporarily unavailable" in out["error"]
