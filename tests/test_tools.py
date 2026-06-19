@@ -331,3 +331,21 @@ def test_get_status_real_provider_error_returns_json(wired_store, monkeypatch):
     out = json.loads(tools.shipment_get_status({"tracking_number": "RP2"}))
     assert "error" in out
     assert "temporarily unavailable" in out["error"]
+
+
+import os
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not os.environ.get("PACKTRACK_LIVE_TRACKING_NUMBER"),
+    reason="PACKTRACK_LIVE_TRACKING_NUMBER not set",
+)
+def test_seventeentrack_live_returns_canonical_status():
+    """Hits the real 17track public endpoint. Run with: pytest -m integration
+    (requires pyseventeentrack installed)."""
+    result = SeventeenTrackProvider().fetch_status(
+        os.environ["PACKTRACK_LIVE_TRACKING_NUMBER"]
+    )
+    assert result.provider == "17track"
+    assert result.status in CANONICAL_STATUSES
