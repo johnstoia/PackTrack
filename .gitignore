@@ -12,3 +12,6 @@ Thumbs.db
 
 # Superpowers workflow artifacts (spec/plan docs) — not part of the shipped plugin
 docs/superpowers/
+
+# Internal design brief — kept locally, not shipped in the repo
+instructions.md
