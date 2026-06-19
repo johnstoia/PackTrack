@@ -455,3 +455,36 @@ def test_usps_uses_api_base_override(monkeypatch, usps_creds):
     monkeypatch.setattr(http_client_mod, "get_json", fake_get)
     USPSProvider().fetch_status("XYZ", "usps")
     assert captured["url"].startswith("https://apis-tem.usps.com/tracking/v3/tracking/XYZ")
+
+
+def test_get_status_routes_to_usps_and_succeeds(wired_store, monkeypatch, usps_creds):
+    monkeypatch.setattr(http_client_mod, "post_form",
+                        lambda url, data, headers=None, timeout=10: {"access_token": "T", "expires_in": 3600})
+    monkeypatch.setattr(http_client_mod, "get_json",
+                        lambda url, headers=None, timeout=10: {"statusCategory": "Delivered"})
+    tools.shipment_add_tracking({"tracking_number": "USPS1", "carrier": "usps"})
+    out = json.loads(tools.shipment_get_status({"tracking_number": "USPS1"}))
+    assert out["success"] is True
+    assert out["status"] == "delivered"
+    assert out["provider"] == "usps"
+
+
+def test_get_status_usps_missing_creds_returns_error(wired_store, monkeypatch):
+    monkeypatch.delenv("USPS_CONSUMER_KEY", raising=False)
+    monkeypatch.delenv("USPS_CONSUMER_SECRET", raising=False)
+    tools.shipment_add_tracking({"tracking_number": "USPS2", "carrier": "usps"})
+    out = json.loads(tools.shipment_get_status({"tracking_number": "USPS2"}))
+    assert "error" in out
+    assert "USPS credentials not configured" in out["error"]
+
+
+def test_get_status_not_found_from_carrier(wired_store, monkeypatch, usps_creds):
+    monkeypatch.setattr(http_client_mod, "post_form",
+                        lambda url, data, headers=None, timeout=10: {"access_token": "T", "expires_in": 3600})
+    def boom(url, headers=None, timeout=10):
+        raise TrackingNotFoundError("tracking number not found")
+    monkeypatch.setattr(http_client_mod, "get_json", boom)
+    tools.shipment_add_tracking({"tracking_number": "USPS3", "carrier": "usps"})
+    out = json.loads(tools.shipment_get_status({"tracking_number": "USPS3"}))
+    assert "error" in out
+    assert "not found" in out["error"]
