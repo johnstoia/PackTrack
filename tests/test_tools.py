@@ -381,3 +381,77 @@ def test_oauth_non_401_error_propagates(monkeypatch):
     monkeypatch.setattr(http_client_mod, "get_json", fake_get)
     with pytest.raises(CarrierAPIError):
         _FakeCarrier().fetch_status("A", "fake")
+
+
+from packtrack.providers.usps import USPSProvider
+
+
+@pytest.fixture
+def usps_creds(monkeypatch):
+    monkeypatch.setenv("USPS_CONSUMER_KEY", "key123")
+    monkeypatch.setenv("USPS_CONSUMER_SECRET", "secret123")
+    monkeypatch.delenv("USPS_API_BASE", raising=False)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("Delivered", "delivered"),
+    ("Out for Delivery", "out_for_delivery"),
+    ("In Transit to Next Facility", "in_transit"),
+    ("Accepted", "in_transit"),
+    ("Arrived at USPS Facility", "in_transit"),
+    ("Pre-Shipment", "pending"),
+    ("Shipping Label Created, USPS Awaiting Item", "pending"),
+    ("Available for Pickup", "available_for_pickup"),
+    ("Delivery Attempt", "delivery_attempted"),
+    ("Alert", "exception"),
+    ("Return to Sender", "returned"),
+    ("Some Brand New Status", "unknown"),
+    ("", "unknown"),
+])
+def test_usps_normalize_status(raw, expected):
+    assert USPSProvider().normalize_status(raw) == expected
+
+
+def test_usps_extract_prefers_status_category():
+    p = USPSProvider()
+    assert p._extract_raw_status({"statusCategory": "Delivered", "status": "x"}) == "Delivered"
+    assert p._extract_raw_status({"status": "Out for Delivery"}) == "Out for Delivery"
+    assert p._extract_raw_status({"statusSummary": "Your item was delivered..."}) == "Your item was delivered..."
+    assert p._extract_raw_status({"trackingEvents": [{"eventType": "Delivered"}]}) == "Delivered"
+    assert p._extract_raw_status({}) == ""
+
+
+def test_usps_credentials_missing_raises(monkeypatch):
+    monkeypatch.delenv("USPS_CONSUMER_KEY", raising=False)
+    monkeypatch.delenv("USPS_CONSUMER_SECRET", raising=False)
+    with pytest.raises(CredentialsMissingError):
+        USPSProvider()._credentials()
+
+
+def test_usps_fetch_status_happy_path(monkeypatch, usps_creds):
+    monkeypatch.setattr(http_client_mod, "post_form",
+                        lambda url, data, headers=None, timeout=10: {"access_token": "T", "expires_in": 3600})
+    captured = {}
+    def fake_get(url, headers=None, timeout=10):
+        captured["url"] = url
+        return {"statusCategory": "Out for Delivery", "trackingEvents": []}
+    monkeypatch.setattr(http_client_mod, "get_json", fake_get)
+    result = USPSProvider().fetch_status("9400111899223817428490", "usps")
+    assert result.status == "out_for_delivery"
+    assert result.raw_status == "Out for Delivery"
+    assert result.provider == "usps"
+    assert captured["url"].endswith("/tracking/v3/tracking/9400111899223817428490?expand=DETAIL")
+    assert captured["url"].startswith("https://apis.usps.com")
+
+
+def test_usps_uses_api_base_override(monkeypatch, usps_creds):
+    monkeypatch.setenv("USPS_API_BASE", "https://apis-tem.usps.com")
+    monkeypatch.setattr(http_client_mod, "post_form",
+                        lambda url, data, headers=None, timeout=10: {"access_token": "T", "expires_in": 3600})
+    captured = {}
+    def fake_get(url, headers=None, timeout=10):
+        captured["url"] = url
+        return {"statusCategory": "Delivered"}
+    monkeypatch.setattr(http_client_mod, "get_json", fake_get)
+    USPSProvider().fetch_status("XYZ", "usps")
+    assert captured["url"].startswith("https://apis-tem.usps.com/tracking/v3/tracking/XYZ")
