@@ -82,9 +82,11 @@ def shipment_get_status(args: dict, **kwargs) -> str:
         return json.dumps({
             "success": True,
             "tracking_number": tracking_number,
-            "carrier": record["carrier"],
+            "carrier": result.carrier or record["carrier"],
             "status": result.status,
+            "sub_status": result.sub_status,
             "raw_status": result.raw_status,
+            "detail": result.detail,
             "provider": result.provider,
         })
     except Exception as exc:

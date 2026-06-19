@@ -1,8 +1,10 @@
 """Provider layer for PackTrak.
 
-This module defines the swappable seam for shipment-tracking backends. The MVP
-ships only `MockProvider`; real providers (AfterShip, EasyPost, 17TRACK) are added
-later by subclassing `TrackingProvider` and registering them in `get_provider`.
+This module defines the swappable seam for shipment-tracking backends.
+`SeventeenTrackProvider` (no-auth 17track) is the default backend; `MockProvider`
+is the deterministic offline/test backend selected via the `"mock"` carrier slug.
+New backends are added by subclassing `TrackingProvider` and wiring them into
+`get_provider`.
 """
 from __future__ import annotations
 
@@ -29,9 +31,12 @@ CANONICAL_STATUSES = (
 class StatusResult:
     """A normalized status answer from a provider."""
 
-    status: str       # one of CANONICAL_STATUSES
-    raw_status: str   # what the provider originally reported
-    provider: str     # provider name, e.g. "mock"
+    status: str                      # one of CANONICAL_STATUSES
+    raw_status: str                  # what the provider originally reported
+    provider: str                    # provider name, e.g. "17track" or "mock"
+    carrier: Optional[str] = None    # carrier the provider detected (if any)
+    sub_status: Optional[str] = None # finer-grained provider status (if any)
+    detail: Optional[str] = None     # latest human-readable event text (if any)
 
 
 class TrackingProvider(ABC):
@@ -40,10 +45,11 @@ class TrackingProvider(ABC):
     name: str
 
     @abstractmethod
-    def normalize_status(self, raw: str) -> str:
+    def normalize_status(self, raw: str, sub_status: Optional[str] = None) -> str:
         """Map a provider-specific status string to one of CANONICAL_STATUSES.
 
-        Unrecognized input must map to "unknown".
+        ``sub_status`` is an optional finer-grained provider status some backends
+        supply. Unrecognized input must map to "unknown".
         """
 
     @abstractmethod
@@ -55,34 +61,27 @@ class ProviderError(Exception):
     """Base class for provider failures. Handlers convert these to {"error": ...}."""
 
 
-class CredentialsMissingError(ProviderError):
-    """Required credentials (environment variables) are not configured."""
-
-
 class TrackingNotFoundError(ProviderError):
-    """The carrier reports the tracking number is unknown (HTTP 404)."""
+    """The tracking number is invalid or has no tracking data."""
 
 
 class CarrierAPIError(ProviderError):
-    """A carrier API call failed (transport, timeout, or HTTP error)."""
-
-    def __init__(self, message: str, status_code: Optional[int] = None):
-        super().__init__(message)
-        self.status_code = status_code
+    """A tracking lookup failed (transport/service error). Treat as transient."""
 
 
-def get_provider(carrier: Optional[str] = "mock") -> TrackingProvider:
-    """Resolve a carrier slug to a provider instance.
+def get_provider(carrier: Optional[str] = None) -> TrackingProvider:
+    """Return the active tracking provider.
 
-    Known carriers route to their real provider; "mock", None, empty, or any
-    unrecognized carrier routes to the mock provider so the plugin stays useful.
+    The no-auth 17track backend is the default for every carrier (it auto-detects
+    the carrier). The deterministic mock provider is selected ONLY by the explicit
+    ``"mock"`` slug (offline/testing). The ``carrier`` argument is otherwise
+    metadata only. A missing ``pyseventeentrack`` dependency is handled inside the
+    provider (lazy auto-install, then a clear error) — never a silent mock fallback.
     """
-    slug = (carrier or "").strip().lower()
-    if slug == "usps":
-        from .usps import USPSProvider
+    if (carrier or "").strip().lower() == "mock":
+        from .mock import MockProvider
 
-        return USPSProvider()
-    # "mock", "", None, or any not-yet-supported carrier -> mock fallback.
-    from .mock import MockProvider
+        return MockProvider()
+    from .seventeentrack import SeventeenTrackProvider
 
-    return MockProvider()
+    return SeventeenTrackProvider()
