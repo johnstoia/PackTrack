@@ -483,9 +483,6 @@ def test_detect_change_hash_absent_falls_back_to_status():
     assert detect_change(rec, moved, now="NOW").changed is True
 
 
-from types import SimpleNamespace as _NS
-
-
 class _FakeProvider:
     """Provider stub for monitoring tests: returns canned StatusResults by number."""
     def __init__(self, results):

@@ -140,14 +140,15 @@ def shipment_check_updates(args: dict, **kwargs) -> str:
         store = _get_store()
         monitored = [r for r in store.list() if r.get("monitor", True)]
         if not monitored:
-            return json.dumps({"success": True, "checked": 0, "changes": []})
+            return json.dumps({"success": True, "checked": 0, "changes": [],
+                               "delivered": []})
 
         numbers = [r["tracking_number"] for r in monitored]
         try:
             results = get_provider().fetch_many(numbers)
         except ProviderError as exc:
             return json.dumps({"success": True, "checked": 0, "changes": [],
-                               "note": str(exc)})
+                               "delivered": [], "note": str(exc)})
 
         changes, delivered = [], []
         for record in monitored:
