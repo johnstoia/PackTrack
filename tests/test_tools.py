@@ -396,3 +396,25 @@ def test_seventeentrack_fetch_status_includes_events_hash(monkeypatch):
         events=[SimpleNamespace(description="moved")], events_hash=999))
     r = prov.fetch_status("A")
     assert r.events_hash == 999
+
+
+def test_store_add_sets_monitoring_defaults(store):
+    record = store.add("M1")
+    assert record["monitor"] is True
+    assert record["last_status"] is None
+    assert record["last_events_hash"] is None
+    assert record["last_checked_at"] is None
+
+
+def test_store_update_patches_and_persists(store, tmp_path):
+    store.add("U1")
+    updated = store.update("U1", last_status="in_transit", last_events_hash=42, monitor=False)
+    assert updated["last_status"] == "in_transit"
+    assert updated["last_events_hash"] == 42
+    assert updated["monitor"] is False
+    reloaded = ShipmentStore(tmp_path / "shipments.json")
+    assert reloaded.find("U1")["last_status"] == "in_transit"
+
+
+def test_store_update_unknown_returns_none(store):
+    assert store.update("NOPE", last_status="x") is None
