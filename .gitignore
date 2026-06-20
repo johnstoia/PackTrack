@@ -15,3 +15,6 @@ docs/superpowers/
 
 # Internal design brief — kept locally, not shipped in the repo
 instructions.md
+
+# Local development log + Hermes ecosystem notes — kept local, not shipped
+docs/DEVELOPMENT_NOTES.md
