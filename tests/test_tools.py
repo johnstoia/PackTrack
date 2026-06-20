@@ -182,7 +182,7 @@ class _RecordingCtx:
         self.registered[name] = {"toolset": toolset, "schema": schema, "handler": handler}
 
 
-def test_register_wires_all_four_tools():
+def test_register_wires_all_six_tools():
     import packtrack
 
     ctx = _RecordingCtx()
@@ -192,6 +192,8 @@ def test_register_wires_all_four_tools():
         "shipment_get_status",
         "shipment_list_tracked",
         "shipment_remove_tracking",
+        "shipment_check_updates",
+        "shipment_set_monitoring",
     }
     # Each wired handler is callable.
     for entry in ctx.registered.values():
@@ -595,3 +597,15 @@ def test_set_monitoring_toggles(wired_store, monkeypatch):
 def test_set_monitoring_unknown_errors(wired_store):
     out = json.loads(tools.shipment_set_monitoring({"tracking_number": "NOPE", "enabled": True}))
     assert "error" in out
+
+
+def test_new_schemas_well_formed():
+    for name, schema in (("shipment_check_updates", schemas_module.CHECK_UPDATES),
+                         ("shipment_set_monitoring", schemas_module.SET_MONITORING)):
+        assert schema["name"] == name
+        assert isinstance(schema["description"], str) and schema["description"]
+        assert schema["parameters"]["type"] == "object"
+
+
+def test_set_monitoring_requires_tracking_number():
+    assert "tracking_number" in schemas_module.SET_MONITORING["parameters"]["required"]

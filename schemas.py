@@ -75,3 +75,36 @@ REMOVE_TRACKING = {
         "required": ["tracking_number"],
     },
 }
+
+CHECK_UPDATES = {
+    "name": "shipment_check_updates",
+    "description": (
+        "Check all monitored shipments for new activity since the last check and "
+        "return only what changed (or report no changes). Use this for periodic "
+        "monitoring — e.g. from a scheduled job that only notifies the user when "
+        "something actually changed."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+SET_MONITORING = {
+    "name": "shipment_set_monitoring",
+    "description": (
+        "Turn monitoring on or off for a tracked shipment. Delivered shipments stop "
+        "being monitored automatically; use this to re-enable one or mute a noisy one."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "tracking_number": {
+                "type": "string",
+                "description": "The tracking number to change monitoring for.",
+            },
+            "enabled": {
+                "type": "boolean",
+                "description": "True to monitor, false to stop monitoring.",
+            },
+        },
+        "required": ["tracking_number", "enabled"],
+    },
+}
