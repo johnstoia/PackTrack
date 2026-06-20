@@ -107,9 +107,10 @@ def test_add_tracking_requires_only_tracking_number():
 
 @pytest.fixture
 def wired_store(tmp_path, monkeypatch):
-    """Point the handlers' store at a temp file via the injectable hook."""
+    """Temp store + a deterministic mock provider, so handler tests stay offline."""
     test_store = ShipmentStore(tmp_path / "shipments.json")
     monkeypatch.setattr(tools, "_get_store", lambda: test_store)
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: MockProvider())
     return test_store
 
 
@@ -478,3 +479,119 @@ def test_detect_change_hash_absent_falls_back_to_status():
     moved = StatusResult(status="delivered", raw_status="x", provider="mock", events_hash=None)
     assert detect_change(rec, same, now="NOW").changed is False
     assert detect_change(rec, moved, now="NOW").changed is True
+
+
+from types import SimpleNamespace as _NS
+
+
+class _FakeProvider:
+    """Provider stub for monitoring tests: returns canned StatusResults by number."""
+    def __init__(self, results):
+        self._results = results
+    def fetch_status(self, number, carrier=None):
+        from packtrack.providers import TrackingNotFoundError
+        if number not in self._results:
+            raise TrackingNotFoundError("no data")
+        return self._results[number]
+    def fetch_many(self, numbers, carrier=None):
+        return {n: self._results[n] for n in numbers if n in self._results}
+
+
+def _sr(status="in_transit", ehash=100, carrier="USPS", detail="moved"):
+    return StatusResult(status=status, raw_status=status, provider="17track",
+                        carrier=carrier, events_hash=ehash, detail=detail)
+
+
+def test_add_warmup_persists_real_data(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider",
+                        lambda carrier=None: _FakeProvider({"W1": _sr(status="in_transit", ehash=5)}))
+    out = json.loads(tools.shipment_add_tracking({"tracking_number": "W1"}))
+    assert out["success"] is True
+    rec = wired_store.find("W1")
+    assert rec["last_status"] == "in_transit"
+    assert rec["last_events_hash"] == 5
+    assert rec["carrier"] == "USPS"
+
+
+def test_add_warmup_blank_leaves_state_null_and_succeeds(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider({}))
+    out = json.loads(tools.shipment_add_tracking({"tracking_number": "W2"}))
+    assert out["success"] is True
+    rec = wired_store.find("W2")
+    assert rec["last_status"] is None and rec["monitor"] is True
+
+
+def test_add_warmup_survives_provider_error(wired_store, monkeypatch):
+    class _Boom:
+        def fetch_status(self, n, carrier=None):
+            from packtrack.providers import CarrierAPIError
+            raise CarrierAPIError("down")
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _Boom())
+    out = json.loads(tools.shipment_add_tracking({"tracking_number": "W3"}))
+    assert out["success"] is True
+    assert wired_store.find("W3")["monitor"] is True
+
+
+def test_list_includes_monitor_and_last_status(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider({}))
+    tools.shipment_add_tracking({"tracking_number": "L1"})
+    out = json.loads(tools.shipment_list_tracked({}))
+    entry = out["shipments"][0]
+    assert entry["monitor"] is True
+    assert "last_status" in entry
+
+
+def test_check_updates_reports_only_changes_and_persists(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider({}))
+    tools.shipment_add_tracking({"tracking_number": "A"})
+    tools.shipment_add_tracking({"tracking_number": "B"})
+    wired_store.update("A", last_status="in_transit", last_events_hash=100)
+    wired_store.update("B", last_status="in_transit", last_events_hash=200)
+    results = {"A": _sr(status="out_for_delivery", ehash=101, detail="Out for delivery"),
+               "B": _sr(status="in_transit", ehash=200, detail="still moving")}
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider(results))
+    out = json.loads(tools.shipment_check_updates({}))
+    assert out["success"] is True
+    assert out["checked"] == 2
+    assert len(out["changes"]) == 1 and "A" in out["changes"][0]
+    assert wired_store.find("A")["last_events_hash"] == 101
+
+
+def test_check_updates_flips_delivered_off(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider({}))
+    tools.shipment_add_tracking({"tracking_number": "D"})
+    wired_store.update("D", last_status="out_for_delivery", last_events_hash=10)
+    monkeypatch.setattr(tools, "get_provider",
+                        lambda carrier=None: _FakeProvider({"D": _sr(status="delivered", ehash=11, detail="Delivered")}))
+    out = json.loads(tools.shipment_check_updates({}))
+    assert "D" in out["delivered"]
+    assert wired_store.find("D")["monitor"] is False
+
+
+def test_check_updates_skips_no_data_keeps_state(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider({}))
+    tools.shipment_add_tracking({"tracking_number": "K"})
+    wired_store.update("K", last_status="in_transit", last_events_hash=7)
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider({}))
+    out = json.loads(tools.shipment_check_updates({}))
+    assert out["checked"] == 1 and out["changes"] == []
+    assert wired_store.find("K")["last_events_hash"] == 7
+
+
+def test_check_updates_no_monitored_is_clean(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider({}))
+    out = json.loads(tools.shipment_check_updates({}))
+    assert out["success"] is True and out["checked"] == 0 and out["changes"] == []
+
+
+def test_set_monitoring_toggles(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider({}))
+    tools.shipment_add_tracking({"tracking_number": "S1"})
+    out = json.loads(tools.shipment_set_monitoring({"tracking_number": "S1", "enabled": False}))
+    assert out["success"] is True and out["monitor"] is False
+    assert wired_store.find("S1")["monitor"] is False
+
+
+def test_set_monitoring_unknown_errors(wired_store):
+    out = json.loads(tools.shipment_set_monitoring({"tracking_number": "NOPE", "enabled": True}))
+    assert "error" in out
