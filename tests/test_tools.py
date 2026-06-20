@@ -418,3 +418,63 @@ def test_store_update_patches_and_persists(store, tmp_path):
 
 def test_store_update_unknown_returns_none(store):
     assert store.update("NOPE", last_status="x") is None
+
+
+from packtrack.changes import detect_change, ChangeResult
+
+
+def _rec(num="C1", carrier=None, last_status=None, last_hash=None):
+    return {"tracking_number": num, "carrier": carrier,
+            "last_status": last_status, "last_events_hash": last_hash}
+
+
+def test_detect_change_hash_unchanged_not_changed():
+    rec = _rec(last_status="in_transit", last_hash=100)
+    res = StatusResult(status="in_transit", raw_status="InTransit", provider="17track",
+                       events_hash=100, detail="moved")
+    cr = detect_change(rec, res, now="NOW")
+    assert cr.changed is False
+    assert cr.new_state["last_events_hash"] == 100
+    assert cr.new_state["last_checked_at"] == "NOW"
+
+
+def test_detect_change_hash_changed_reports():
+    rec = _rec(num="C2", last_status="in_transit", last_hash=100)
+    res = StatusResult(status="out_for_delivery", raw_status="OutForDelivery",
+                       provider="17track", events_hash=200, detail="Out for delivery")
+    cr = detect_change(rec, res, now="NOW")
+    assert cr.changed is True
+    assert "C2" in cr.summary and "out_for_delivery" in cr.summary
+    assert cr.new_state["last_status"] == "out_for_delivery"
+
+
+def test_detect_change_first_populate_is_change():
+    rec = _rec(last_status=None, last_hash=None)
+    res = StatusResult(status="in_transit", raw_status="InTransit", provider="17track",
+                       events_hash=None, detail="moved")
+    cr = detect_change(rec, res, now="NOW")
+    assert cr.changed is True
+
+
+def test_detect_change_delivered_stops_monitoring():
+    rec = _rec(last_status="out_for_delivery", last_hash=200)
+    res = StatusResult(status="delivered", raw_status="Delivered", provider="17track",
+                       events_hash=300, detail="Delivered")
+    cr = detect_change(rec, res, now="NOW")
+    assert cr.new_state["monitor"] is False
+
+
+def test_detect_change_fills_carrier_when_missing():
+    rec = _rec(carrier=None, last_status="in_transit", last_hash=100)
+    res = StatusResult(status="in_transit", raw_status="InTransit", provider="17track",
+                       carrier="USPS", events_hash=100)
+    cr = detect_change(rec, res, now="NOW")
+    assert cr.new_state["carrier"] == "USPS"
+
+
+def test_detect_change_hash_absent_falls_back_to_status():
+    rec = _rec(last_status="in_transit", last_hash=None)
+    same = StatusResult(status="in_transit", raw_status="x", provider="mock", events_hash=None)
+    moved = StatusResult(status="delivered", raw_status="x", provider="mock", events_hash=None)
+    assert detect_change(rec, same, now="NOW").changed is False
+    assert detect_change(rec, moved, now="NOW").changed is True
