@@ -37,6 +37,7 @@ class StatusResult:
     carrier: Optional[str] = None    # carrier the provider detected (if any)
     sub_status: Optional[str] = None # finer-grained provider status (if any)
     detail: Optional[str] = None     # latest human-readable event text (if any)
+    events_hash: Optional[int] = None  # hash of the events list for change detection
 
 
 class TrackingProvider(ABC):
@@ -55,6 +56,17 @@ class TrackingProvider(ABC):
     @abstractmethod
     def fetch_status(self, tracking_number: str, carrier: Optional[str]) -> StatusResult:
         """Return the current StatusResult for a tracking number."""
+
+    def fetch_many(self, tracking_numbers, carrier=None) -> "dict[str, StatusResult]":
+        """Fetch several numbers. Default loops fetch_status; numbers with no
+        tracking data are omitted. Subclasses may override with a batched call."""
+        out = {}
+        for number in tracking_numbers:
+            try:
+                out[number] = self.fetch_status(number, carrier)
+            except TrackingNotFoundError:
+                continue
+        return out
 
 
 class ProviderError(Exception):

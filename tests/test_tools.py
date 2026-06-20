@@ -349,3 +349,50 @@ def test_seventeentrack_live_returns_canonical_status():
     )
     assert result.provider == "17track"
     assert result.status in CANONICAL_STATUSES
+
+
+def test_statusresult_has_events_hash_default_none():
+    r = StatusResult(status="in_transit", raw_status="InTransit", provider="x")
+    assert r.events_hash is None
+
+
+def test_fetch_many_default_loops_and_skips_not_found():
+    from packtrack.providers import TrackingProvider, StatusResult, TrackingNotFoundError
+
+    class _P(TrackingProvider):
+        name = "p"
+        def normalize_status(self, raw, sub_status=None):
+            return "in_transit"
+        def fetch_status(self, tracking_number, carrier=None):
+            if tracking_number == "BAD":
+                raise TrackingNotFoundError("nope")
+            return StatusResult(status="in_transit", raw_status="x", provider="p")
+
+    out = _P().fetch_many(["A", "BAD", "B"])
+    assert set(out.keys()) == {"A", "B"}
+    assert out["A"].provider == "p"
+
+
+def test_seventeentrack_fetch_many_maps_by_number(monkeypatch):
+    from types import SimpleNamespace
+    prov = SeventeenTrackProvider()
+    pkgs = [
+        SimpleNamespace(tracking_number="A", status="InTransit", sub_status="InTransit_Other",
+                        carrier="USPS", events=[SimpleNamespace(description="moved")], events_hash=111),
+        SimpleNamespace(tracking_number="B", status="Delivered", sub_status="Delivered_Other",
+                        carrier="USPS", events=[SimpleNamespace(description="done")], events_hash=222),
+    ]
+    monkeypatch.setattr(prov, "_find_many", lambda numbers: pkgs)
+    out = prov.fetch_many(["A", "B"])
+    assert out["A"].status == "in_transit" and out["A"].events_hash == 111
+    assert out["B"].status == "delivered" and out["B"].events_hash == 222
+
+
+def test_seventeentrack_fetch_status_includes_events_hash(monkeypatch):
+    from types import SimpleNamespace
+    prov = SeventeenTrackProvider()
+    monkeypatch.setattr(prov, "_find", lambda num: SimpleNamespace(
+        status="InTransit", sub_status="InTransit_Other", carrier="USPS",
+        events=[SimpleNamespace(description="moved")], events_hash=999))
+    r = prov.fetch_status("A")
+    assert r.events_hash == 999
