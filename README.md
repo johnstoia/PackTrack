@@ -134,6 +134,33 @@ the dependency is installed):
 PACKTRACK_LIVE_TRACKING_NUMBER=9400111899223817428490 pytest -m integration
 ```
 
+## Monitoring & alerts
+
+The plugin remembers each shipment's last-seen activity, so it can tell you **only
+what changed**. Two tools support this:
+
+- `shipment_check_updates` — re-checks every monitored shipment and returns only new
+  activity (or "no changes"). Delivered shipments stop being monitored automatically.
+- `shipment_set_monitoring` — turn watching on/off for a shipment.
+
+**Automatic monitoring is delegated to Hermes's scheduler** (a plugin can't run its
+own background loop). Set it up once by asking the agent, e.g.:
+
+> "Set up a recurring job: every 4 hours, run the shipment update check and only
+> message me if something changed."
+
+Hermes runs it on schedule and the agent relays results on whatever platform you use
+(Telegram, Discord, CLI, …) — nothing platform-specific is built into the plugin.
+
+Notes:
+- Whether a scheduled run stays **silent** when there are no changes depends on
+  Hermes's cron delivery, not the plugin. The plugin returns a clean "no changes"
+  signal; if a run still posts "nothing new," tweak the cron prompt.
+- **First lookup:** a brand-new tracking number returns no data until 17track fetches
+  it from the carrier (seconds–minutes). Adding it says "tracking started — initial
+  data may take a few minutes"; the next check fills it in.
+- Removing delivered/stale shipments isn't automatic yet — that's a planned follow-up.
+
 ## Swapping the provider
 
 `providers/__init__.py` defines the `TrackingProvider` ABC and `get_provider()`
