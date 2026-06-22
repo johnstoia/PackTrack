@@ -107,10 +107,11 @@ def test_add_tracking_requires_only_tracking_number():
 
 @pytest.fixture
 def wired_store(tmp_path, monkeypatch):
-    """Temp store + a deterministic mock provider, so handler tests stay offline."""
+    """Temp store + deterministic mock provider + no-op sleep, so handler tests stay offline and instant."""
     test_store = ShipmentStore(tmp_path / "shipments.json")
     monkeypatch.setattr(tools, "_get_store", lambda: test_store)
     monkeypatch.setattr(tools, "get_provider", lambda carrier=None: MockProvider())
+    monkeypatch.setattr(tools, "_sleep", lambda *_a, **_k: None)
     return test_store
 
 
@@ -147,9 +148,12 @@ def test_list_tracked_counts_and_contents(wired_store):
 
 
 def test_get_status_success_and_deterministic(wired_store):
-    tools.shipment_add_tracking({"tracking_number": "STATUS1", "carrier": "mock"})
-    out1 = json.loads(tools.shipment_get_status({"tracking_number": "STATUS1"}))
-    out2 = json.loads(tools.shipment_get_status({"tracking_number": "STATUS1"}))
+    # "STATUS2" hashes to "returned" via MockProvider (non-blank), ensuring the live
+    # path is exercised; "STATUS1" hashes to "unknown" which the new blank-fallback
+    # logic correctly treats as pending rather than a real status.
+    tools.shipment_add_tracking({"tracking_number": "STATUS2", "carrier": "mock"})
+    out1 = json.loads(tools.shipment_get_status({"tracking_number": "STATUS2"}))
+    out2 = json.loads(tools.shipment_get_status({"tracking_number": "STATUS2"}))
     assert out1["success"] is True
     assert out1["status"] in CANONICAL_STATUSES
     assert out1["provider"] == "mock"
@@ -665,3 +669,75 @@ def test_fetch_latest_gives_up_after_retries():
     assert is_blank(out)
     assert prov.calls == 3
     assert sleeps == [1.5, 1.5]
+
+
+def _sr_live(status="in_transit", ehash=9, carrier="USPS", detail="Departed facility"):
+    return StatusResult(status=status, raw_status=status, provider="17track",
+                        carrier=carrier, events_hash=ehash, detail=detail)
+
+
+class _OneProvider:
+    def __init__(self, result):
+        self._result = result
+    def fetch_status(self, number, carrier=None):
+        return self._result
+
+
+def test_get_status_returns_and_persists_live(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _OneProvider(_sr_live()))
+    tools.shipment_add_tracking({"tracking_number": "G1", "carrier": "usps"})
+    out = json.loads(tools.shipment_get_status({"tracking_number": "G1"}))
+    assert out["success"] is True and out["status"] == "in_transit"
+    assert out.get("stale") is not True
+    assert wired_store.find("G1")["last_status"] == "in_transit"
+
+
+def test_get_status_rule1_blank_falls_back_to_stored(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider",
+                        lambda carrier=None: _OneProvider(_sr_live("unknown", ehash=None, carrier=None, detail=None)))
+    tools.shipment_add_tracking({"tracking_number": "G2", "carrier": "usps"})
+    wired_store.update("G2", last_status="out_for_delivery", last_events_hash=5,
+                       last_checked_at="2026-06-22T00:00:00Z")
+    out = json.loads(tools.shipment_get_status({"tracking_number": "G2"}))
+    assert out["success"] is True
+    assert out["status"] == "out_for_delivery"
+    assert out["stale"] is True
+    assert "ask again" in out["message"].lower()
+
+
+def test_get_status_rule2_blank_no_history_prompts_again(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider",
+                        lambda carrier=None: _OneProvider(_sr_live("unknown", ehash=None, carrier=None, detail=None)))
+    tools.shipment_add_tracking({"tracking_number": "G3", "carrier": "usps"})
+    wired_store.update("G3", last_status=None, last_events_hash=None)
+    out = json.loads(tools.shipment_get_status({"tracking_number": "G3"}))
+    assert out["success"] is True
+    assert out["status"] == "unknown"
+    assert out["pending"] is True
+    assert "ask again" in out["message"].lower()
+
+
+def test_get_status_not_found_with_stored_uses_rule1(wired_store, monkeypatch):
+    class _NotFound:
+        def fetch_status(self, number, carrier=None):
+            raise TrackingNotFoundError("no shipments")
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _NotFound())
+    tools.shipment_add_tracking({"tracking_number": "G4", "carrier": "usps"})
+    wired_store.update("G4", last_status="delivered", last_events_hash=3)
+    out = json.loads(tools.shipment_get_status({"tracking_number": "G4"}))
+    assert out["status"] == "delivered" and out["stale"] is True
+
+
+def test_get_status_carrier_error_no_history_surfaces_error(wired_store, monkeypatch):
+    class _Down:
+        def fetch_status(self, number, carrier=None):
+            raise CarrierAPIError("pyseventeentrack is not installed")
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _Down())
+    tools.shipment_add_tracking({"tracking_number": "G5", "carrier": "usps"})
+    out = json.loads(tools.shipment_get_status({"tracking_number": "G5"}))
+    assert "error" in out and "not installed" in out["error"]
+
+
+def test_get_status_not_tracked_errors(wired_store):
+    out = json.loads(tools.shipment_get_status({"tracking_number": "NOPE"}))
+    assert "error" in out
