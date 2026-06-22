@@ -60,11 +60,17 @@ Statuses are normalized to: `pending`, `info_received`, `in_transit`,
 ## Data
 
 Tracked shipments are stored in `data/shipments.json` (`{"shipments": [...]}`).
-The repo ships an empty store. Manual testing mutates this file; reset it with:
+This file holds **per-user state** (your real tracking numbers and delivery info),
+so it is **gitignored** and not shipped in the repo — the store creates it (and the
+`data/` directory) automatically on the first `shipment_add_tracking`. To reset your
+local store, just delete the file; it is recreated empty on the next add:
 
 ```bash
-git checkout data/shipments.json
+rm data/shipments.json
 ```
+
+Because it's untracked, your live data never rides along with `git pull` updates and
+can't be wiped by a `git reset --hard`.
 
 ## Development
 
@@ -94,6 +100,22 @@ grep -i packtrack ~/.hermes/logs/agent.log | tail -5
 A line like `Failed to load plugin 'packtrack': No module named 'schemas'` confirms an
 import problem (see "intra-plugin imports must be relative" above). After fixing and
 pulling, restart Hermes and re-run `hermes tools enable shipment`.
+
+**A tool errors with a stale-code mismatch after a `git pull` update** — e.g.
+`StatusResult.__init__() got an unexpected keyword argument 'events_hash'` even though
+the source clearly defines that field. This is **stale running code**, not a bug in the
+repo: Python may keep an old compiled `.pyc` in `__pycache__/`, and each TUI session
+runs a long-lived worker that loaded the plugin at session start. A plain
+`hermes gateway restart` only recycles the *system* gateway, not those per-session
+workers, so old code keeps serving. Fix it by clearing the bytecode and starting a
+genuinely fresh session:
+
+```bash
+find ~/.hermes/plugins/packtrack -name __pycache__ -type d -prune -exec rm -rf {} +
+```
+
+Then start a brand-new session. If it still errors, **reboot the box** — that
+guarantees every worker re-imports the current source.
 
 ## How tracking works
 

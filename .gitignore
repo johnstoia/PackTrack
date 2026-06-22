@@ -18,3 +18,6 @@ instructions.md
 
 # Local development log + Hermes ecosystem notes — kept local, not shipped
 docs/DEVELOPMENT_NOTES.md
+
+# Per-user shipment store — created on first run, holds real tracking data
+data/shipments.json
