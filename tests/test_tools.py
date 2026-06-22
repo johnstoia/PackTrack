@@ -741,3 +741,56 @@ def test_get_status_carrier_error_no_history_surfaces_error(wired_store, monkeyp
 def test_get_status_not_tracked_errors(wired_store):
     out = json.loads(tools.shipment_get_status({"tracking_number": "NOPE"}))
     assert "error" in out
+
+
+class _TwoPassProvider:
+    """First fetch_many returns blanks; the second (re-read) returns real."""
+    def __init__(self, blank_first, real_second):
+        self._blank = blank_first
+        self._real = real_second
+        self.calls = []
+    def fetch_many(self, numbers, carrier=None):
+        numbers = list(numbers)
+        self.calls.append(numbers)
+        if len(self.calls) == 1:
+            return {n: self._blank[n] for n in numbers if n in self._blank}
+        return {n: self._real[n] for n in numbers if n in self._real}
+
+
+def test_check_updates_primes_waits_rereads(wired_store, monkeypatch):
+    tools.shipment_add_tracking({"tracking_number": "P1", "carrier": "usps"})
+    wired_store.update("P1", last_status="in_transit", last_events_hash=1, monitor=True)
+    blank = {"P1": StatusResult(status="unknown", raw_status="", provider="17track")}
+    real = {"P1": StatusResult(status="out_for_delivery", raw_status="OutForDelivery",
+                               provider="17track", carrier="USPS", events_hash=2, detail="OFD")}
+    prov = _TwoPassProvider(blank, real)
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: prov)
+    sleeps = []
+    monkeypatch.setattr(tools, "_sleep", lambda d: sleeps.append(d))
+
+    out = json.loads(tools.shipment_check_updates({}))
+    assert len(out["changes"]) == 1 and "P1" in out["changes"][0]
+    assert wired_store.find("P1")["last_events_hash"] == 2
+    assert sleeps == [tools._CHECK_REFRESH_WAIT]
+    assert prov.calls[0] == ["P1"]   # primed all
+    assert prov.calls[1] == ["P1"]   # re-read only the blanks
+
+
+def test_check_updates_no_blanks_skips_wait(wired_store, monkeypatch):
+    tools.shipment_add_tracking({"tracking_number": "P2", "carrier": "usps"})
+    wired_store.update("P2", last_status="in_transit", last_events_hash=1, monitor=True)
+    real = {"P2": StatusResult(status="in_transit", raw_status="InTransit",
+                               provider="17track", events_hash=1)}
+    class _Fresh:
+        def __init__(self): self.calls = 0
+        def fetch_many(self, numbers, carrier=None):
+            self.calls += 1
+            return {n: real[n] for n in numbers if n in real}
+    prov = _Fresh()
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: prov)
+    sleeps = []
+    monkeypatch.setattr(tools, "_sleep", lambda d: sleeps.append(d))
+    out = json.loads(tools.shipment_check_updates({}))
+    assert out["success"] is True
+    assert sleeps == []
+    assert prov.calls == 1

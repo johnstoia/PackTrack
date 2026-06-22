@@ -213,11 +213,21 @@ def shipment_check_updates(args: dict, **kwargs) -> str:
             return json.dumps({"success": True, "checked": 0, "changes": [],
                                "delivered": [], "note": str(exc)})
 
+        # The endpoint returns a cold snapshot and re-syncs async; re-read the blanks
+        # once after a wait so monitoring sees fresh data (not perpetual "no changes").
+        blanks = [n for n in numbers if is_blank(results.get(n))]
+        if blanks:
+            _sleep(_CHECK_REFRESH_WAIT)
+            try:
+                results.update(get_provider().fetch_many(blanks))
+            except ProviderError:
+                pass  # transient — keep what we have
+
         changes, delivered = [], []
         for record in monitored:
             result = results.get(record["tracking_number"])
-            if result is None:
-                continue  # no data this round — keep state
+            if result is None or is_blank(result):
+                continue  # no usable data this round — keep state
             change = detect_change(record, result)
             store.update(record["tracking_number"], **change.new_state)
             if change.changed and change.summary:
