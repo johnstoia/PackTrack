@@ -107,10 +107,11 @@ def test_add_tracking_requires_only_tracking_number():
 
 @pytest.fixture
 def wired_store(tmp_path, monkeypatch):
-    """Temp store + a deterministic mock provider, so handler tests stay offline."""
+    """Temp store + deterministic mock provider + no-op sleep, so handler tests stay offline and instant."""
     test_store = ShipmentStore(tmp_path / "shipments.json")
     monkeypatch.setattr(tools, "_get_store", lambda: test_store)
     monkeypatch.setattr(tools, "get_provider", lambda carrier=None: MockProvider())
+    monkeypatch.setattr(tools, "_sleep", lambda *_a, **_k: None)
     return test_store
 
 
@@ -147,9 +148,12 @@ def test_list_tracked_counts_and_contents(wired_store):
 
 
 def test_get_status_success_and_deterministic(wired_store):
-    tools.shipment_add_tracking({"tracking_number": "STATUS1", "carrier": "mock"})
-    out1 = json.loads(tools.shipment_get_status({"tracking_number": "STATUS1"}))
-    out2 = json.loads(tools.shipment_get_status({"tracking_number": "STATUS1"}))
+    # "STATUS2" hashes to "returned" via MockProvider (non-blank), ensuring the live
+    # path is exercised; "STATUS1" hashes to "unknown" which the new blank-fallback
+    # logic correctly treats as pending rather than a real status.
+    tools.shipment_add_tracking({"tracking_number": "STATUS2", "carrier": "mock"})
+    out1 = json.loads(tools.shipment_get_status({"tracking_number": "STATUS2"}))
+    out2 = json.loads(tools.shipment_get_status({"tracking_number": "STATUS2"}))
     assert out1["success"] is True
     assert out1["status"] in CANONICAL_STATUSES
     assert out1["provider"] == "mock"
@@ -606,3 +610,187 @@ def test_new_schemas_well_formed():
 
 def test_set_monitoring_requires_tracking_number():
     assert "tracking_number" in schemas_module.SET_MONITORING["parameters"]["required"]
+
+
+from packtrack.freshness import is_blank, fetch_latest
+
+
+def test_is_blank_cases():
+    assert is_blank(None) is True
+    assert is_blank(StatusResult(status="", raw_status="", provider="x")) is True
+    assert is_blank(StatusResult(status="unknown", raw_status="", provider="x")) is True
+    assert is_blank(StatusResult(status="in_transit", raw_status="x", provider="x")) is False
+
+
+class _SeqProvider:
+    """Returns queued StatusResults (or raises queued exceptions) per fetch_status call."""
+    def __init__(self, seq):
+        self._seq = list(seq)
+        self.calls = 0
+    def fetch_status(self, number, carrier=None):
+        self.calls += 1
+        item = self._seq.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _real():
+    return StatusResult(status="in_transit", raw_status="InTransit", provider="17track",
+                        events_hash=1, detail="moved")
+
+
+def _blank():
+    return StatusResult(status="unknown", raw_status="", provider="17track")
+
+
+def test_fetch_latest_returns_first_real_without_sleeping():
+    sleeps = []
+    prov = _SeqProvider([_real()])
+    out = fetch_latest(prov, "A", None, retries=2, delay=3.0, sleep=lambda d: sleeps.append(d))
+    assert out.status == "in_transit"
+    assert prov.calls == 1
+    assert sleeps == []
+
+
+def test_fetch_latest_retries_blank_then_real():
+    sleeps = []
+    prov = _SeqProvider([_blank(), _real()])
+    out = fetch_latest(prov, "A", None, retries=2, delay=3.0, sleep=lambda d: sleeps.append(d))
+    assert out.status == "in_transit"
+    assert prov.calls == 2
+    assert sleeps == [3.0]
+
+
+def test_fetch_latest_gives_up_after_retries():
+    sleeps = []
+    prov = _SeqProvider([_blank(), _blank(), _blank()])
+    out = fetch_latest(prov, "A", None, retries=2, delay=1.5, sleep=lambda d: sleeps.append(d))
+    assert is_blank(out)
+    assert prov.calls == 3
+    assert sleeps == [1.5, 1.5]
+
+
+def _sr_live(status="in_transit", ehash=9, carrier="USPS", detail="Departed facility"):
+    return StatusResult(status=status, raw_status=status, provider="17track",
+                        carrier=carrier, events_hash=ehash, detail=detail)
+
+
+class _OneProvider:
+    def __init__(self, result):
+        self._result = result
+    def fetch_status(self, number, carrier=None):
+        return self._result
+
+
+def test_get_status_returns_and_persists_live(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _OneProvider(_sr_live()))
+    tools.shipment_add_tracking({"tracking_number": "G1", "carrier": "usps"})
+    out = json.loads(tools.shipment_get_status({"tracking_number": "G1"}))
+    assert out["success"] is True and out["status"] == "in_transit"
+    assert out.get("stale") is not True
+    assert wired_store.find("G1")["last_status"] == "in_transit"
+
+
+def test_get_status_rule1_blank_falls_back_to_stored(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider",
+                        lambda carrier=None: _OneProvider(_sr_live("unknown", ehash=None, carrier=None, detail=None)))
+    tools.shipment_add_tracking({"tracking_number": "G2", "carrier": "usps"})
+    wired_store.update("G2", last_status="out_for_delivery", last_events_hash=5,
+                       last_checked_at="2026-06-22T00:00:00Z")
+    out = json.loads(tools.shipment_get_status({"tracking_number": "G2"}))
+    assert out["success"] is True
+    assert out["status"] == "out_for_delivery"
+    assert out["stale"] is True
+    assert "ask again" in out["message"].lower()
+
+
+def test_get_status_rule2_blank_no_history_prompts_again(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider",
+                        lambda carrier=None: _OneProvider(_sr_live("unknown", ehash=None, carrier=None, detail=None)))
+    tools.shipment_add_tracking({"tracking_number": "G3", "carrier": "usps"})
+    wired_store.update("G3", last_status=None, last_events_hash=None)
+    out = json.loads(tools.shipment_get_status({"tracking_number": "G3"}))
+    assert out["success"] is True
+    assert out["status"] == "unknown"
+    assert out["pending"] is True
+    assert "ask again" in out["message"].lower()
+
+
+def test_get_status_not_found_with_stored_uses_rule1(wired_store, monkeypatch):
+    class _NotFound:
+        def fetch_status(self, number, carrier=None):
+            raise TrackingNotFoundError("no shipments")
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _NotFound())
+    tools.shipment_add_tracking({"tracking_number": "G4", "carrier": "usps"})
+    wired_store.update("G4", last_status="delivered", last_events_hash=3)
+    out = json.loads(tools.shipment_get_status({"tracking_number": "G4"}))
+    assert out["status"] == "delivered" and out["stale"] is True
+
+
+def test_get_status_carrier_error_no_history_surfaces_error(wired_store, monkeypatch):
+    class _Down:
+        def fetch_status(self, number, carrier=None):
+            raise CarrierAPIError("pyseventeentrack is not installed")
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _Down())
+    tools.shipment_add_tracking({"tracking_number": "G5", "carrier": "usps"})
+    out = json.loads(tools.shipment_get_status({"tracking_number": "G5"}))
+    assert "error" in out and "not installed" in out["error"]
+
+
+def test_get_status_not_tracked_errors(wired_store):
+    out = json.loads(tools.shipment_get_status({"tracking_number": "NOPE"}))
+    assert "error" in out
+
+
+class _TwoPassProvider:
+    """First fetch_many returns blanks; the second (re-read) returns real."""
+    def __init__(self, blank_first, real_second):
+        self._blank = blank_first
+        self._real = real_second
+        self.calls = []
+    def fetch_many(self, numbers, carrier=None):
+        numbers = list(numbers)
+        self.calls.append(numbers)
+        if len(self.calls) == 1:
+            return {n: self._blank[n] for n in numbers if n in self._blank}
+        return {n: self._real[n] for n in numbers if n in self._real}
+
+
+def test_check_updates_primes_waits_rereads(wired_store, monkeypatch):
+    tools.shipment_add_tracking({"tracking_number": "P1", "carrier": "usps"})
+    wired_store.update("P1", last_status="in_transit", last_events_hash=1, monitor=True)
+    blank = {"P1": StatusResult(status="unknown", raw_status="", provider="17track")}
+    real = {"P1": StatusResult(status="out_for_delivery", raw_status="OutForDelivery",
+                               provider="17track", carrier="USPS", events_hash=2, detail="OFD")}
+    prov = _TwoPassProvider(blank, real)
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: prov)
+    sleeps = []
+    monkeypatch.setattr(tools, "_sleep", lambda d: sleeps.append(d))
+
+    out = json.loads(tools.shipment_check_updates({}))
+    assert len(out["changes"]) == 1 and "P1" in out["changes"][0]
+    assert wired_store.find("P1")["last_events_hash"] == 2
+    assert sleeps == [tools._CHECK_REFRESH_WAIT]
+    assert prov.calls[0] == ["P1"]   # primed all
+    assert prov.calls[1] == ["P1"]   # re-read only the blanks
+
+
+def test_check_updates_no_blanks_skips_wait(wired_store, monkeypatch):
+    tools.shipment_add_tracking({"tracking_number": "P2", "carrier": "usps"})
+    wired_store.update("P2", last_status="in_transit", last_events_hash=1, monitor=True)
+    real = {"P2": StatusResult(status="in_transit", raw_status="InTransit",
+                               provider="17track", events_hash=1)}
+    class _Fresh:
+        def __init__(self): self.calls = 0
+        def fetch_many(self, numbers, carrier=None):
+            self.calls += 1
+            return {n: real[n] for n in numbers if n in real}
+    prov = _Fresh()
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: prov)
+    sleeps = []
+    monkeypatch.setattr(tools, "_sleep", lambda d: sleeps.append(d))
+    out = json.loads(tools.shipment_check_updates({}))
+    assert out["success"] is True
+    assert sleeps == []
+    assert prov.calls == 1

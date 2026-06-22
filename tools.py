@@ -7,15 +7,26 @@ raises — errors are returned as {"error": "..."}. The store path is resolved t
 from __future__ import annotations
 
 import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .changes import detect_change
-from .providers import get_provider, ProviderError
+from .freshness import is_blank, fetch_latest
+from .providers import get_provider, ProviderError, TrackingNotFoundError, CarrierAPIError
 from .store import ShipmentStore
 
 # Default runtime store: data/shipments.json next to this module.
 _DEFAULT_STORE_PATH = Path(__file__).parent / "data" / "shipments.json"
+
+_GET_STATUS_RETRIES = int(os.environ.get("PACKTRACK_GET_STATUS_RETRIES", "1"))
+_GET_STATUS_RETRY_DELAY = float(os.environ.get("PACKTRACK_GET_STATUS_RETRY_DELAY", "3.0"))
+_CHECK_REFRESH_WAIT = float(os.environ.get("PACKTRACK_CHECK_REFRESH_WAIT", "12.0"))
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
 
 
 def _get_store() -> ShipmentStore:
@@ -35,6 +46,32 @@ def _public(record: dict) -> dict:
         "added_at": record.get("added_at"),
         "monitor": record.get("monitor", True),
         "last_status": record.get("last_status"),
+    }
+
+
+def _live_response(tracking_number: str, record: dict, result) -> dict:
+    return {
+        "success": True,
+        "tracking_number": tracking_number,
+        "carrier": result.carrier or record.get("carrier"),
+        "status": result.status,
+        "sub_status": result.sub_status,
+        "raw_status": result.raw_status,
+        "detail": result.detail,
+        "provider": result.provider,
+    }
+
+
+def _stored_response(tracking_number: str, record: dict, note: str) -> dict:
+    return {
+        "success": True,
+        "tracking_number": tracking_number,
+        "carrier": record.get("carrier"),
+        "status": record.get("last_status"),
+        "last_checked_at": record.get("last_checked_at"),
+        "provider": "17track",
+        "stale": True,
+        "message": f"Status as of last check; {note}.",
     }
 
 
@@ -100,22 +137,48 @@ def shipment_get_status(args: dict, **kwargs) -> str:
         if record is None:
             return json.dumps({"error": "tracking_number not tracked"})
 
+        prev = record.get("last_status")
+        prev_real = bool(prev) and prev != "unknown"
+
+        result = None
         try:
-            result = get_provider(record["carrier"]).fetch_status(
-                tracking_number, record["carrier"]
+            result = fetch_latest(
+                get_provider(record["carrier"]), tracking_number, record["carrier"],
+                retries=_GET_STATUS_RETRIES, delay=_GET_STATUS_RETRY_DELAY, sleep=_sleep,
             )
-        except ProviderError as exc:
+        except TrackingNotFoundError:
+            result = None
+        except CarrierAPIError as exc:
+            if prev_real:
+                return json.dumps(_stored_response(
+                    tracking_number, record,
+                    f"live refresh failed ({exc}); showing last known status"))
             return json.dumps({"error": str(exc)})
 
+        if not is_blank(result):
+            patch = {"last_status": result.status, "last_events_hash": result.events_hash,
+                     "last_checked_at": _utcnow()}
+            if result.carrier and not record.get("carrier"):
+                patch["carrier"] = result.carrier
+            if result.status == "delivered":
+                patch["monitor"] = False
+            _get_store().update(tracking_number, **patch)
+            return json.dumps(_live_response(tracking_number, record, result))
+
+        if prev_real:  # Rule 1 — never show a spurious "unknown"
+            return json.dumps(_stored_response(
+                tracking_number, record,
+                "a fresh re-sync is in progress — ask again in a few seconds for the latest"))
+
+        # Rule 2 — genuinely no data yet
         return json.dumps({
             "success": True,
             "tracking_number": tracking_number,
-            "carrier": result.carrier or record["carrier"],
-            "status": result.status,
-            "sub_status": result.sub_status,
-            "raw_status": result.raw_status,
-            "detail": result.detail,
-            "provider": result.provider,
+            "carrier": record.get("carrier"),
+            "status": "unknown",
+            "pending": True,
+            "message": ("No data yet — 17track is fetching this from the carrier "
+                        "(it may be brand-new, or just needs a moment). Ask again in ~10 seconds."),
         })
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -150,11 +213,21 @@ def shipment_check_updates(args: dict, **kwargs) -> str:
             return json.dumps({"success": True, "checked": 0, "changes": [],
                                "delivered": [], "note": str(exc)})
 
+        # The endpoint returns a cold snapshot and re-syncs async; re-read the blanks
+        # once after a wait so monitoring sees fresh data (not perpetual "no changes").
+        blanks = [n for n in numbers if is_blank(results.get(n))]
+        if blanks:
+            _sleep(_CHECK_REFRESH_WAIT)
+            try:
+                results.update(get_provider().fetch_many(blanks))
+            except ProviderError:
+                pass  # transient — keep what we have
+
         changes, delivered = [], []
         for record in monitored:
             result = results.get(record["tracking_number"])
-            if result is None:
-                continue  # no data this round — keep state
+            if result is None or is_blank(result):
+                continue  # no usable data this round — keep state
             change = detect_change(record, result)
             store.update(record["tracking_number"], **change.new_state)
             if change.changed and change.summary:

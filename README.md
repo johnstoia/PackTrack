@@ -124,6 +124,29 @@ relies on an undocumented public endpoint that can change. Tracking failures are
 treated as transient ("temporarily unavailable"), never as "package gone." Keep
 polling light — this plugin is intended to run per-user, not as a shared server.
 
+### Status freshness (why a first check can say "fetching")
+
+17track's public endpoint returns an empty snapshot and re-syncs from the carrier in
+the background (a few seconds, sometimes ~10s), so a single read can lag. The plugin
+handles this:
+
+- `shipment_get_status` briefly retries, then — if still no fresh data — returns the
+  **last known status** ("as of last check") rather than a misleading "unknown." For a
+  brand-new number with no history, it asks you to check again in ~10 seconds.
+- `shipment_check_updates` primes, waits, and re-reads, so scheduled monitoring sees
+  fresh data and keeps the stored status current.
+
+Tunable via env vars (defaults shown):
+
+| Env var | Default | Effect |
+|---|---|---|
+| `PACKTRACK_GET_STATUS_RETRIES` | `1` | extra live reads on a blank `get_status` (set `0` for instant stored fallback) |
+| `PACKTRACK_GET_STATUS_RETRY_DELAY` | `3.0` | seconds between those reads |
+| `PACKTRACK_CHECK_REFRESH_WAIT` | `12.0` | seconds `check_updates` waits before re-reading blanks |
+
+If your Hermes setup enforces a short tool-call timeout, lower
+`PACKTRACK_CHECK_REFRESH_WAIT` and/or set `PACKTRACK_GET_STATUS_RETRIES=0`.
+
 ### Live integration test
 
 The unit suite is hermetic (the library boundary is mocked). One opt-in test makes a
