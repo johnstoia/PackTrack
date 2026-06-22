@@ -13,6 +13,9 @@ a swappable seam, so new backends drop in without changing the tool handlers.
 | `shipment_get_status` | Get normalized delivery status for a tracked number. |
 | `shipment_list_tracked` | List all tracked shipments. |
 | `shipment_remove_tracking` | Stop tracking a number. |
+| `shipment_check_updates` | Re-check monitored shipments, report only what changed, and auto-prune finished ones. |
+| `shipment_set_monitoring` | Turn monitoring on/off for a shipment. |
+| `shipment_prune` | Manually remove finished (delivered/stale) shipments now. |
 
 Statuses are normalized to: `pending`, `info_received`, `in_transit`,
 `out_for_delivery`, `delivered`, `available_for_pickup`, `delivery_attempted`,
@@ -38,7 +41,7 @@ Statuses are normalized to: `pending`, `info_received`, `in_transit`,
    HERMES_PLUGINS_DEBUG=1 hermes plugins list
    ```
 
-3. **Enable the `shipment` toolset.** The plugin registers its four tools under a
+3. **Enable the `shipment` toolset.** The plugin registers its tools under a
    `shipment` toolset, and Hermes toolsets are opt-in, so enable it once:
 
    ```bash
@@ -185,8 +188,10 @@ The plugin remembers each shipment's last-seen activity, so it can tell you **on
 what changed**. Two tools support this:
 
 - `shipment_check_updates` — re-checks every monitored shipment and returns only new
-  activity (or "no changes"). Delivered shipments stop being monitored automatically.
+  activity (or "no changes"). Delivered shipments stop being monitored automatically,
+  and finished ones are auto-pruned (see below).
 - `shipment_set_monitoring` — turn watching on/off for a shipment.
+- `shipment_prune` — manually run the cleanup now (see below).
 
 **Automatic monitoring is delegated to Hermes's scheduler** (a plugin can't run its
 own background loop). Set it up once by asking the agent, e.g.:
@@ -204,7 +209,33 @@ Notes:
 - **First lookup:** a brand-new tracking number returns no data until 17track fetches
   it from the carrier (seconds–minutes). Adding it says "tracking started — initial
   data may take a few minutes"; the next check fills it in.
-- Removing delivered/stale shipments isn't automatic yet — that's a planned follow-up.
+
+### Delivered lifecycle / auto-prune
+
+Finished shipments are removed automatically so the list stays clean. The same
+`shipment_check_updates` run that powers monitoring also sweeps the **entire** store
+and hard-deletes:
+
+- **delivered** packages once they've been delivered for `PACKTRACK_DELIVERED_PRUNE_DAYS`
+  (default **3 days**) — so you keep seeing "delivered" for a few days, then it drops off;
+- **undelivered** packages still being monitored that have had **no status change** for
+  `PACKTRACK_STALE_PRUNE_DAYS` (default **30 days**) — lost numbers, typos, or
+  never-scanned labels. A shipment you've deliberately stopped monitoring is never
+  stale-pruned.
+
+Pruning is by tracking *activity*, not by when it was last polled. On the first sweep
+after upgrading, any pre-existing record is given a fresh clock and is **not** deleted
+that round, so nothing vanishes unexpectedly.
+
+For on-demand cleanup, `shipment_prune` runs the same logic immediately. Pass
+`delivered_now: true` to remove **all** delivered packages right away, ignoring the
+3-day grace ("clean up my delivered packages now"). To remove one specific shipment at
+any time, use `shipment_remove_tracking`.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `PACKTRACK_DELIVERED_PRUNE_DAYS` | `3` | days after delivery before auto-removal |
+| `PACKTRACK_STALE_PRUNE_DAYS` | `30` | days of no status change before an undelivered, monitored package is removed |
 
 ## Swapping the provider
 

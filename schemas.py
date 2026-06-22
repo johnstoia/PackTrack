@@ -108,3 +108,27 @@ SET_MONITORING = {
         "required": ["tracking_number", "enabled"],
     },
 }
+
+PRUNE = {
+    "name": "shipment_prune",
+    "description": (
+        "Remove finished shipments from the tracked list: delivered packages past "
+        "their grace period and undelivered packages with no activity for a long "
+        "time. Pruning also happens automatically during shipment_check_updates; use "
+        "this for on-demand cleanup. Set delivered_now=true to immediately remove ALL "
+        "delivered packages, ignoring the grace period."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "delivered_now": {
+                "type": "boolean",
+                "description": (
+                    "If true, immediately remove all delivered packages, ignoring "
+                    "the normal grace period."
+                ),
+            },
+        },
+        "required": [],
+    },
+}

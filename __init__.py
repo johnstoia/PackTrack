@@ -42,3 +42,9 @@ def register(ctx):
         schema=schemas.SET_MONITORING,
         handler=tools.shipment_set_monitoring,
     )
+    ctx.register_tool(
+        name="shipment_prune",
+        toolset="shipment",
+        schema=schemas.PRUNE,
+        handler=tools.shipment_prune,
+    )

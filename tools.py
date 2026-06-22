@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .changes import detect_change
 from .freshness import is_blank, fetch_latest
+from .prune import select_prunable
 from .providers import get_provider, ProviderError, TrackingNotFoundError, CarrierAPIError
 from .store import ShipmentStore
 
@@ -23,6 +24,8 @@ _DEFAULT_STORE_PATH = Path(__file__).parent / "data" / "shipments.json"
 _GET_STATUS_RETRIES = int(os.environ.get("PACKTRACK_GET_STATUS_RETRIES", "1"))
 _GET_STATUS_RETRY_DELAY = float(os.environ.get("PACKTRACK_GET_STATUS_RETRY_DELAY", "3.0"))
 _CHECK_REFRESH_WAIT = float(os.environ.get("PACKTRACK_CHECK_REFRESH_WAIT", "12.0"))
+_DELIVERED_PRUNE_DAYS = float(os.environ.get("PACKTRACK_DELIVERED_PRUNE_DAYS", "3"))
+_STALE_PRUNE_DAYS = float(os.environ.get("PACKTRACK_STALE_PRUNE_DAYS", "30"))
 
 
 def _sleep(seconds: float) -> None:
@@ -95,14 +98,19 @@ def shipment_add_tracking(args: dict, **kwargs) -> str:
         try:
             res = get_provider(record["carrier"]).fetch_status(
                 tracking_number, record["carrier"])
+            now = _utcnow()
             patch = {"last_status": res.status, "last_events_hash": res.events_hash,
-                     "last_checked_at": _utcnow()}
+                     "last_checked_at": now}
             if res.carrier and not record.get("carrier"):
                 patch["carrier"] = res.carrier
             if res.status == "delivered":
                 patch["monitor"] = False
-            record = store.update(tracking_number, **patch) or record
             has_data = res.status not in (None, "", "unknown")
+            if has_data:
+                # Real status captured at add time — start the activity clock now
+                # (store.add seeded it to added_at for the no-data case).
+                patch["last_change_at"] = now
+            record = store.update(tracking_number, **patch) or record
         except ProviderError:
             pass  # transient/no-data — warm-up is best-effort
 
@@ -156,12 +164,22 @@ def shipment_get_status(args: dict, **kwargs) -> str:
             return json.dumps({"error": str(exc)})
 
         if not is_blank(result):
+            now = _utcnow()
             patch = {"last_status": result.status, "last_events_hash": result.events_hash,
-                     "last_checked_at": _utcnow()}
+                     "last_checked_at": now}
             if result.carrier and not record.get("carrier"):
                 patch["carrier"] = result.carrier
             if result.status == "delivered":
                 patch["monitor"] = False
+            # Bump the activity clock only when the status actually moved, mirroring
+            # detect_change so the lifecycle timer measures change, not poll, time.
+            prev_hash = record.get("last_events_hash")
+            if result.events_hash is not None:
+                status_changed = result.events_hash != prev_hash
+            else:
+                status_changed = result.status != prev
+            if status_changed:
+                patch["last_change_at"] = now
             _get_store().update(tracking_number, **patch)
             return json.dumps(_live_response(tracking_number, record, result))
 
@@ -198,45 +216,69 @@ def shipment_remove_tracking(args: dict, **kwargs) -> str:
         return json.dumps({"error": str(exc)})
 
 
+def _run_prune(store, *, delivered_days: float, stale_days: float) -> list:
+    """Backfill records missing an activity clock and hard-delete finished ones.
+    Returns the list of pruned tracking numbers. Pure selection lives in prune.py."""
+    to_backfill, to_prune = select_prunable(
+        store.list(), datetime.now(timezone.utc),
+        delivered_days=delivered_days, stale_days=stale_days)
+    if to_backfill:
+        now = _utcnow()
+        for rec in to_backfill:
+            store.update(rec["tracking_number"], last_change_at=now)
+    pruned = []
+    for rec in to_prune:
+        if store.remove(rec["tracking_number"]):
+            pruned.append(rec["tracking_number"])
+    return pruned
+
+
 def shipment_check_updates(args: dict, **kwargs) -> str:
     try:
         store = _get_store()
         monitored = [r for r in store.list() if r.get("monitor", True)]
-        if not monitored:
-            return json.dumps({"success": True, "checked": 0, "changes": [],
-                               "delivered": []})
-
-        numbers = [r["tracking_number"] for r in monitored]
-        try:
-            results = get_provider().fetch_many(numbers)
-        except ProviderError as exc:
-            return json.dumps({"success": True, "checked": 0, "changes": [],
-                               "delivered": [], "note": str(exc)})
-
-        # The endpoint returns a cold snapshot and re-syncs async; re-read the blanks
-        # once after a wait so monitoring sees fresh data (not perpetual "no changes").
-        blanks = [n for n in numbers if is_blank(results.get(n))]
-        if blanks:
-            _sleep(_CHECK_REFRESH_WAIT)
-            try:
-                results.update(get_provider().fetch_many(blanks))
-            except ProviderError:
-                pass  # transient — keep what we have
-
         changes, delivered = [], []
-        for record in monitored:
-            result = results.get(record["tracking_number"])
-            if result is None or is_blank(result):
-                continue  # no usable data this round — keep state
-            change = detect_change(record, result)
-            store.update(record["tracking_number"], **change.new_state)
-            if change.changed and change.summary:
-                changes.append(change.summary)
-            if change.new_state.get("monitor") is False:
-                delivered.append(record["tracking_number"])
+        note = None
 
-        return json.dumps({"success": True, "checked": len(monitored),
-                           "changes": changes, "delivered": delivered})
+        if monitored:
+            numbers = [r["tracking_number"] for r in monitored]
+            try:
+                results = get_provider().fetch_many(numbers)
+
+                # The endpoint returns a cold snapshot and re-syncs async; re-read the
+                # blanks once after a wait so monitoring sees fresh data (not perpetual
+                # "no changes").
+                blanks = [n for n in numbers if is_blank(results.get(n))]
+                if blanks:
+                    _sleep(_CHECK_REFRESH_WAIT)
+                    try:
+                        results.update(get_provider().fetch_many(blanks))
+                    except ProviderError:
+                        pass  # transient — keep what we have
+
+                for record in monitored:
+                    result = results.get(record["tracking_number"])
+                    if result is None or is_blank(result):
+                        continue  # no usable data this round — keep state
+                    change = detect_change(record, result)
+                    store.update(record["tracking_number"], **change.new_state)
+                    if change.changed and change.summary:
+                        changes.append(change.summary)
+                    if change.new_state.get("monitor") is False:
+                        delivered.append(record["tracking_number"])
+            except ProviderError as exc:
+                note = str(exc)  # whole-batch failure — still run the prune sweep
+
+        # Prune sweep runs over the FULL store (delivered packages have monitor=False),
+        # regardless of whether anything was monitored or the fetch succeeded.
+        pruned = _run_prune(store, delivered_days=_DELIVERED_PRUNE_DAYS,
+                            stale_days=_STALE_PRUNE_DAYS)
+
+        resp = {"success": True, "checked": len(monitored), "changes": changes,
+                "delivered": delivered, "pruned": pruned}
+        if note:
+            resp["note"] = note
+        return json.dumps(resp)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
@@ -253,5 +295,18 @@ def shipment_set_monitoring(args: dict, **kwargs) -> str:
         store.update(tracking_number, monitor=enabled)
         return json.dumps({"success": True, "tracking_number": tracking_number,
                            "monitor": enabled})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def shipment_prune(args: dict, **kwargs) -> str:
+    try:
+        store = _get_store()
+        delivered_now = bool(args.get("delivered_now", False))
+        delivered_days = 0 if delivered_now else _DELIVERED_PRUNE_DAYS
+        removed = _run_prune(store, delivered_days=delivered_days,
+                             stale_days=_STALE_PRUNE_DAYS)
+        return json.dumps({"success": True, "removed": removed,
+                           "removed_count": len(removed)})
     except Exception as exc:
         return json.dumps({"error": str(exc)})
