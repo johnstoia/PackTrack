@@ -606,3 +606,62 @@ def test_new_schemas_well_formed():
 
 def test_set_monitoring_requires_tracking_number():
     assert "tracking_number" in schemas_module.SET_MONITORING["parameters"]["required"]
+
+
+from packtrack.freshness import is_blank, fetch_latest
+
+
+def test_is_blank_cases():
+    assert is_blank(None) is True
+    assert is_blank(StatusResult(status="", raw_status="", provider="x")) is True
+    assert is_blank(StatusResult(status="unknown", raw_status="", provider="x")) is True
+    assert is_blank(StatusResult(status="in_transit", raw_status="x", provider="x")) is False
+
+
+class _SeqProvider:
+    """Returns queued StatusResults (or raises queued exceptions) per fetch_status call."""
+    def __init__(self, seq):
+        self._seq = list(seq)
+        self.calls = 0
+    def fetch_status(self, number, carrier=None):
+        self.calls += 1
+        item = self._seq.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _real():
+    return StatusResult(status="in_transit", raw_status="InTransit", provider="17track",
+                        events_hash=1, detail="moved")
+
+
+def _blank():
+    return StatusResult(status="unknown", raw_status="", provider="17track")
+
+
+def test_fetch_latest_returns_first_real_without_sleeping():
+    sleeps = []
+    prov = _SeqProvider([_real()])
+    out = fetch_latest(prov, "A", None, retries=2, delay=3.0, sleep=lambda d: sleeps.append(d))
+    assert out.status == "in_transit"
+    assert prov.calls == 1
+    assert sleeps == []
+
+
+def test_fetch_latest_retries_blank_then_real():
+    sleeps = []
+    prov = _SeqProvider([_blank(), _real()])
+    out = fetch_latest(prov, "A", None, retries=2, delay=3.0, sleep=lambda d: sleeps.append(d))
+    assert out.status == "in_transit"
+    assert prov.calls == 2
+    assert sleeps == [3.0]
+
+
+def test_fetch_latest_gives_up_after_retries():
+    sleeps = []
+    prov = _SeqProvider([_blank(), _blank(), _blank()])
+    out = fetch_latest(prov, "A", None, retries=2, delay=1.5, sleep=lambda d: sleeps.append(d))
+    assert is_blank(out)
+    assert prov.calls == 3
+    assert sleeps == [1.5, 1.5]
