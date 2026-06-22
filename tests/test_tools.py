@@ -186,7 +186,7 @@ class _RecordingCtx:
         self.registered[name] = {"toolset": toolset, "schema": schema, "handler": handler}
 
 
-def test_register_wires_all_six_tools():
+def test_register_wires_all_seven_tools():
     import packtrack
 
     ctx = _RecordingCtx()
@@ -198,6 +198,7 @@ def test_register_wires_all_six_tools():
         "shipment_remove_tracking",
         "shipment_check_updates",
         "shipment_set_monitoring",
+        "shipment_prune",
     }
     # Each wired handler is callable.
     for entry in ctx.registered.values():
@@ -794,3 +795,113 @@ def test_check_updates_no_blanks_skips_wait(wired_store, monkeypatch):
     assert out["success"] is True
     assert sleeps == []
     assert prov.calls == 1
+
+
+# --- Delivered lifecycle / auto-prune (#3) -------------------------------------
+
+_OLD = "2020-01-01T00:00:00Z"  # far enough in the past to exceed any grace/stale window
+
+
+def test_store_add_seeds_last_change_at(store):
+    rec = store.add("AC")
+    assert rec["last_change_at"] == rec["added_at"]
+
+
+def test_detect_change_sets_last_change_at_on_change():
+    rec = _rec(last_status="in_transit", last_hash=100)
+    res = StatusResult(status="delivered", raw_status="Delivered", provider="17track",
+                       events_hash=200)
+    cr = detect_change(rec, res, now="NOW")
+    assert cr.new_state["last_change_at"] == "NOW"
+
+
+def test_detect_change_no_change_omits_last_change_at():
+    rec = _rec(last_status="in_transit", last_hash=100)
+    res = StatusResult(status="in_transit", raw_status="x", provider="17track",
+                       events_hash=100)
+    cr = detect_change(rec, res, now="NOW")
+    assert "last_change_at" not in cr.new_state
+
+
+def test_add_warmup_real_status_bumps_change_at(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider",
+                        lambda carrier=None: _FakeProvider({"WC": _sr(status="in_transit", ehash=5)}))
+    tools.shipment_add_tracking({"tracking_number": "WC"})
+    rec = wired_store.find("WC")
+    assert rec["last_change_at"] is not None
+    assert rec["last_change_at"] >= rec["added_at"]
+
+
+def test_get_status_change_bumps_change_at(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _OneProvider(_sr_live(ehash=9)))
+    tools.shipment_add_tracking({"tracking_number": "GC", "carrier": "usps"})
+    wired_store.update("GC", last_status="info_received", last_events_hash=1, last_change_at=_OLD)
+    json.loads(tools.shipment_get_status({"tracking_number": "GC"}))
+    assert wired_store.find("GC")["last_change_at"] != _OLD
+
+
+def test_get_status_no_change_keeps_change_at(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _OneProvider(_sr_live(ehash=9)))
+    tools.shipment_add_tracking({"tracking_number": "GN", "carrier": "usps"})
+    wired_store.update("GN", last_status="in_transit", last_events_hash=9, last_change_at=_OLD)
+    json.loads(tools.shipment_get_status({"tracking_number": "GN"}))
+    assert wired_store.find("GN")["last_change_at"] == _OLD
+
+
+def test_check_updates_prunes_delivered_and_runs_with_zero_monitored(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider({}))
+    tools.shipment_add_tracking({"tracking_number": "OLD"})
+    wired_store.update("OLD", last_status="delivered", monitor=False, last_change_at=_OLD)
+    out = json.loads(tools.shipment_check_updates({}))
+    assert out["checked"] == 0          # nothing monitored, but the sweep still ran
+    assert "OLD" in out["pruned"]
+    assert wired_store.find("OLD") is None
+
+
+def test_check_updates_keeps_fresh_delivered(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider({}))
+    tools.shipment_add_tracking({"tracking_number": "FRESH"})
+    wired_store.update("FRESH", last_status="delivered", monitor=False)  # last_change_at ~ now
+    out = json.loads(tools.shipment_check_updates({}))
+    assert out["pruned"] == []
+    assert wired_store.find("FRESH") is not None
+
+
+def test_check_updates_backfills_missing_change_at_without_pruning(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider({}))
+    tools.shipment_add_tracking({"tracking_number": "NOCLOCK"})
+    wired_store.update("NOCLOCK", last_status="delivered", monitor=False, last_change_at=None)
+    out = json.loads(tools.shipment_check_updates({}))
+    assert "NOCLOCK" not in out["pruned"]
+    rec = wired_store.find("NOCLOCK")
+    assert rec is not None and rec["last_change_at"] is not None
+
+
+def test_shipment_prune_default_thresholds(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider({}))
+    tools.shipment_add_tracking({"tracking_number": "P_DEL"})
+    tools.shipment_add_tracking({"tracking_number": "P_KEEP"})
+    wired_store.update("P_DEL", last_status="delivered", monitor=False, last_change_at=_OLD)
+    wired_store.update("P_KEEP", last_status="delivered", monitor=False)  # fresh
+    out = json.loads(tools.shipment_prune({}))
+    assert out["success"] is True
+    assert out["removed"] == ["P_DEL"] and out["removed_count"] == 1
+    assert wired_store.find("P_KEEP") is not None
+
+
+def test_shipment_prune_delivered_now_ignores_grace(wired_store, monkeypatch):
+    monkeypatch.setattr(tools, "get_provider", lambda carrier=None: _FakeProvider({}))
+    tools.shipment_add_tracking({"tracking_number": "FRESHDEL"})
+    wired_store.update("FRESHDEL", last_status="delivered", monitor=False)  # fresh
+    assert json.loads(tools.shipment_prune({}))["removed"] == []           # default keeps it
+    out = json.loads(tools.shipment_prune({"delivered_now": True}))
+    assert "FRESHDEL" in out["removed"]
+    assert wired_store.find("FRESHDEL") is None
+
+
+def test_prune_schema_well_formed():
+    s = schemas_module.PRUNE
+    assert s["name"] == "shipment_prune"
+    assert s["parameters"]["type"] == "object"
+    assert s["parameters"]["required"] == []
+    assert "delivered_now" in s["parameters"]["properties"]

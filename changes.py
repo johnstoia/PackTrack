@@ -47,6 +47,10 @@ def detect_change(record: dict, result: StatusResult, now: Optional[str] = None)
         new_state["carrier"] = result.carrier
     if result.status == "delivered":
         new_state["monitor"] = False
+    if changed:
+        # Stamp the activity clock only on a real change, so the lifecycle/prune
+        # logic can measure "time since last status change" (not since last poll).
+        new_state["last_change_at"] = now
 
     summary = None
     if changed:

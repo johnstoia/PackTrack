@@ -39,15 +39,20 @@ class ShipmentStore:
     def add(self, tracking_number: str, carrier: Optional[str] = None,
             label: Optional[str] = None) -> dict:
         data = self._read()
+        created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         record = {
             "tracking_number": tracking_number,
             "carrier": carrier,
             "label": label,
-            "added_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "added_at": created_at,
             "monitor": True,
             "last_status": None,
             "last_events_hash": None,
             "last_checked_at": None,
+            # Activity clock for the lifecycle/prune logic; bumped only on real status
+            # changes. Starts at creation so an undelivered package's stale timer runs
+            # from when it was added.
+            "last_change_at": created_at,
         }
         data["shipments"].append(record)
         self._write(data)
