@@ -27,3 +27,8 @@ def pytest_configure(config):
         "integration: live tests that hit real carrier APIs; require credentials, "
         "skipped by default.",
     )
+
+
+import os as _os
+
+_os.environ.setdefault("PACKTRACK_NO_AUTOINSTALL", "1")

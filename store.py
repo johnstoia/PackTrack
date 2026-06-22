@@ -44,10 +44,25 @@ class ShipmentStore:
             "carrier": carrier,
             "label": label,
             "added_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "monitor": True,
+            "last_status": None,
+            "last_events_hash": None,
+            "last_checked_at": None,
         }
         data["shipments"].append(record)
         self._write(data)
         return record
+
+    def update(self, tracking_number: str, **fields) -> Optional[dict]:
+        """Patch fields on a record and persist. Returns the record, or None if
+        the tracking number isn't present."""
+        data = self._read()
+        for record in data["shipments"]:
+            if record["tracking_number"] == tracking_number:
+                record.update(fields)
+                self._write(data)
+                return record
+        return None
 
     def remove(self, tracking_number: str) -> bool:
         data = self._read()

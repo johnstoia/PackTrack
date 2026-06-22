@@ -115,7 +115,13 @@ class SeventeenTrackProvider(TrackingProvider):
         return _STATUS_MAP.get(raw, "unknown")
 
     def fetch_status(self, tracking_number: str, carrier: Optional[str] = None) -> StatusResult:
-        pkg = self._find(tracking_number)
+        return self._to_result(self._find(tracking_number))
+
+    def fetch_many(self, tracking_numbers, carrier=None):
+        return {pkg.tracking_number: self._to_result(pkg)
+                for pkg in self._find_many(list(tracking_numbers))}
+
+    def _to_result(self, pkg) -> StatusResult:
         latest = pkg.events[0].description if getattr(pkg, "events", None) else None
         return StatusResult(
             status=self.normalize_status(pkg.status, pkg.sub_status),
@@ -124,6 +130,7 @@ class SeventeenTrackProvider(TrackingProvider):
             carrier=pkg.carrier,
             sub_status=pkg.sub_status,
             detail=latest,
+            events_hash=getattr(pkg, "events_hash", None),
         )
 
     def _find(self, tracking_number: str):
@@ -160,3 +167,32 @@ class SeventeenTrackProvider(TrackingProvider):
         if not packages:
             raise TrackingNotFoundError(f"no tracking data for {tracking_number}")
         return packages[0]
+
+    def _find_many(self, tracking_numbers):
+        """Return TrackedPackages for several numbers in one request.
+
+        A wholesale transport/service failure raises CarrierAPIError; if 17track
+        returns no shipments at all, returns an empty list (caller keeps state).
+        """
+        if not tracking_numbers:
+            return []
+        try:
+            Client, InvalidTrackingNumberError, SeventeenTrackError, aiohttp = (
+                _import_track_api()
+            )
+        except (ImportError, subprocess.CalledProcessError, OSError) as exc:
+            raise CarrierAPIError(
+                "pyseventeentrack is not installed and could not be auto-installed."
+            ) from exc
+
+        async def _call():
+            async with aiohttp.ClientSession() as session:
+                client = Client(session=session)
+                return await client.track.find(*tracking_numbers)
+
+        try:
+            return _run_async(_call) or []
+        except InvalidTrackingNumberError:
+            return []
+        except SeventeenTrackError as exc:
+            raise CarrierAPIError(f"tracking temporarily unavailable: {exc}") from exc

@@ -30,3 +30,15 @@ def register(ctx):
         schema=schemas.REMOVE_TRACKING,
         handler=tools.shipment_remove_tracking,
     )
+    ctx.register_tool(
+        name="shipment_check_updates",
+        toolset="shipment",
+        schema=schemas.CHECK_UPDATES,
+        handler=tools.shipment_check_updates,
+    )
+    ctx.register_tool(
+        name="shipment_set_monitoring",
+        toolset="shipment",
+        schema=schemas.SET_MONITORING,
+        handler=tools.shipment_set_monitoring,
+    )
