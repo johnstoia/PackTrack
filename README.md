@@ -60,6 +60,49 @@ Statuses are normalized to: `pending`, `info_received`, `in_transit`,
    - get the status of `1Z999AA10123456784`
    - remove tracking for `1Z999AA10123456784`
 
+## Updating an existing install
+
+Pulling a new version into an existing `~/.hermes/plugins/packtrack` takes three things
+that aren't obvious — skipping them causes confusing "stale code" errors or a refused
+pull. Do them in order:
+
+```bash
+cd ~/.hermes/plugins/packtrack
+
+# 1. Back up your shipment store. Only needed if you first installed before v0.5.0,
+#    when data/shipments.json was still tracked — a plain pull will then refuse with
+#    "local changes to data/shipments.json would be overwritten by merge".
+cp data/shipments.json /tmp/packtrack-shipments.bak
+
+# 2. Pull the latest.
+git pull
+#    If the pull was refused in step 1, discard the now-untracked file and re-pull,
+#    then restore your data (it's gitignored from v0.5.0 on, so it stays put after):
+#      git checkout -- data/shipments.json && git pull
+#      cp /tmp/packtrack-shipments.bak data/shipments.json
+
+# 3. Delete stale bytecode. A plain restart REUSES old __pycache__/*.pyc, which is the
+#    usual cause of errors like "unexpected keyword argument 'events_hash'" from
+#    source that's clearly correct.
+find ~/.hermes/plugins/packtrack -name __pycache__ -type d -prune -exec rm -rf {} +
+```
+
+Then **reload the code into a fresh session:**
+
+```bash
+hermes gateway restart          # if this needs sudo: sudo "$(command -v hermes)" gateway restart
+```
+
+…and **open a brand-new session** — don't reuse an existing tab. Each TUI session runs a
+long-lived worker that loaded the plugin at session start, and `gateway restart` does
+**not** recycle those, so an old session keeps running old code. If a tool *still* errors
+with a stale-code mismatch in a genuinely new session, **reboot the box** — that
+guarantees every worker re-imports the current source. (More detail in
+[Troubleshooting](#troubleshooting).)
+
+New tools from an update appear automatically; you only need `hermes tools enable
+shipment` if the `shipment` toolset was never enabled.
+
 ## Data
 
 Tracked shipments are stored in `data/shipments.json` (`{"shipments": [...]}`).
